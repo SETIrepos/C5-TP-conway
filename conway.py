@@ -6,7 +6,7 @@ from argparse import ArgumentParser
 from build import conway
 
 def profile(grid_size, **kwargs):
-    grid_ping = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.int32, device="cuda")
+    grid_ping = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.uint8, device="cuda")
     grid_pong = torch.empty_like(grid_ping)
     game = conway.GameOfLife()
 
@@ -31,11 +31,11 @@ def profile(grid_size, **kwargs):
 
 def test(**kwargs):
     grid_size = 16
-    grid = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.int32, device="cuda")
+    grid = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.uint8, device="cuda")
 
     # Reference implementation in pure torch
     kernel = torch.tensor([[[[1, 1, 1], [1, 0, 1], [1, 1, 1]]]], dtype=torch.float32, device="cuda")
-    neighbors = torch.nn.functional.conv2d(grid.reshape((1, 1, grid_size, grid_size)).to(torch.float32), kernel, padding="same").reshape((grid_size, grid_size)).round().to(torch.int32)
+    neighbors = torch.nn.functional.conv2d(grid.reshape((1, 1, grid_size, grid_size)).to(torch.float32), kernel, padding="same").reshape((grid_size, grid_size)).round().to(torch.uint8)
     torch_out = (neighbors == 3) | (grid & (neighbors == 2))
 
     # Our implementation
@@ -66,7 +66,7 @@ def read_pattern(file_path, tensor):
         max_cols = max(max_cols, len(row))
         pattern.append(row)
 
-    torch_pattern = torch.zeros((len(pattern), max_cols), dtype=torch.int32, device="cuda")
+    torch_pattern = torch.zeros((len(pattern), max_cols), dtype=torch.uint8, device="cuda")
     for i, row in enumerate(pattern):
         for j, val in enumerate(row):
             torch_pattern[i, j] = val
@@ -97,7 +97,7 @@ def update(frameNum, img, grid_ping, grid_pong, game):
 
 
 def show(grid_size, **kwargs):
-    grid_ping = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.int32)
+    grid_ping = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.uint8)
     if kwargs.get("file") is not None:
         read_pattern(kwargs["file"], grid_ping)
     grid_ping = grid_ping.to("cuda")

@@ -2,7 +2,7 @@
 #include <c10/cuda/CUDAStream.h>
 #include <torch/extension.h>
 
-__global__ void game_of_life_kernel(int *grid, int *new_grid, int width,
+__global__ void game_of_life_kernel(unsigned char *grid, unsigned char *new_grid, int width,
                                     int height) {
   for (int block_start_x = blockIdx.x * blockDim.x; block_start_x < width;
        block_start_x += blockDim.x * gridDim.x) {
@@ -18,44 +18,24 @@ __global__ void game_of_life_kernel(int *grid, int *new_grid, int width,
 
       int idx = y * width + x;
 
-      // TODO: 1. Calculate the number of alive neighbors
+      // Calculate the number of alive neighbors
       int alive_neighbors = 0;
       for (int dy = -1; dy < 2; dy++) {
         for (int dx = -1; dx < 2; dx++) {
-          if (dy == 0 && dx == 0)
-            continue;
-          if (x + dx < 0 || x + dx >= width || y + dy < 0 || y + dy >= height)
-            continue;
-
-          if (grid[idx + dx + dy*width] > 0)
-            alive_neighbors++;
+          if (x + dx >= 0 && x + dx < width && y + dy >= 0 && y + dy < height && (dy != 0 || dx != 0)) {
+            alive_neighbors += grid[idx + dx + dy * width];
+          }
         }
       }
 
-      // TODO: 2. Apply the rules of Conway's Game of Life
-      if (grid[idx] == 0) {
-        if (alive_neighbors == 3) {
-          new_grid[idx] = 1;
-        }
-        else {
-          new_grid[idx] = 0;
-        }
+      // Apply the Game of Life rules
+      new_grid[idx] = 0;
+      if (grid[idx] == 0 && alive_neighbors == 3 || (grid[idx] == 1 && (alive_neighbors == 4 || alive_neighbors == 3))) {
+        new_grid[idx] = 1;
       }
-      else if (grid[idx] > 0) {
-        if (alive_neighbors < 2) {
-          new_grid[idx] = 0;
-        }
-        else if (alive_neighbors < 4) {
-          new_grid[idx] = 1;
-        }
-        else {
-          new_grid[idx] = 0;
-        }
-      }
-
-
-
-      // TODO: 3. Write the result to the new grid
+      // else if (grid[idx] == 1 && (alive_neighbors == 4 || alive_neighbors == 3)) {
+      //   new_grid[idx] = 1;
+      // }
 
       // TODO(once you pass the conformance test): measure with nvprof, and
       // check for different ways of improving performance
@@ -74,9 +54,10 @@ void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
     cudaStream = c10::cuda::CUDAStream(stream.value()).stream();
   }
 
-  const dim3 blockSize(1, 16);
-  const dim3 gridSize(1, 1);
+  const dim3 blockSize(32, 32);
+  const dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
+                      (height + blockSize.y - 1) / blockSize.y);
 
   game_of_life_kernel<<<gridSize, blockSize, 0, cudaStream>>>(
-      grid_in.data_ptr<int>(), grid_out.data_ptr<int>(), width, height);
+      grid_in.data_ptr<unsigned char>(), grid_out.data_ptr<unsigned char>(), width, height);
 }
