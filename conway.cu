@@ -29,10 +29,11 @@ __global__ void game_of_life_kernel(unsigned char *grid, unsigned char *new_grid
       }
 
       // Apply the Game of Life rules
-      new_grid[idx] = 0;
-      if (grid[idx] == 0 && alive_neighbors == 3 || (grid[idx] == 1 && (alive_neighbors == 4 || alive_neighbors == 3))) {
-        new_grid[idx] = 1;
-      }
+      new_grid[idx] = alive_neighbors == 3 || (grid[idx] == 1 && alive_neighbors == 2);
+      // new_grid[idx] = 0;
+      // if (grid[idx] == 0 && alive_neighbors == 3 || (grid[idx] == 1 && (alive_neighbors == 4 || alive_neighbors == 3))) {
+      //   new_grid[idx] = 1;
+      // }
       // else if (grid[idx] == 1 && (alive_neighbors == 4 || alive_neighbors == 3)) {
       //   new_grid[idx] = 1;
       // }
