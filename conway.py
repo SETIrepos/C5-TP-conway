@@ -45,9 +45,9 @@ def test(**kwargs):
 
     match = torch.allclose(torch_out, out)
     if match:
-        print('✅ Both implementations match')
+        print('Both implementations match')
     else:
-        print('❌ Error, see difference:')
+        print('Error, see difference:')
         print(torch_out ^ out)
 
 
