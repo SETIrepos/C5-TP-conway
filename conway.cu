@@ -16,8 +16,45 @@ __global__ void game_of_life_kernel(int *grid, int *new_grid, int width,
       if (x >= width || y >= height)
         continue;
 
+      int idx = y * width + x;
+
       // TODO: 1. Calculate the number of alive neighbors
+      int alive_neighbors = 0;
+      for (int dy = -1; dy < 2; dy++) {
+        for (int dx = -1; dx < 2; dx++) {
+          if (dy == 0 && dx == 0)
+            continue;
+          if (x + dx < 0 || x + dx >= width || y + dy < 0 || y + dy >= height)
+            continue;
+
+          if (grid[idx + dx + dy*width] > 0)
+            alive_neighbors++;
+        }
+      }
+
       // TODO: 2. Apply the rules of Conway's Game of Life
+      if (grid[idx] == 0) {
+        if (alive_neighbors == 3) {
+          new_grid[idx] = 1;
+        }
+        else {
+          new_grid[idx] = 0;
+        }
+      }
+      else if (grid[idx] > 0) {
+        if (alive_neighbors < 2) {
+          new_grid[idx] = 0;
+        }
+        else if (alive_neighbors < 4) {
+          new_grid[idx] = 1;
+        }
+        else {
+          new_grid[idx] = 0;
+        }
+      }
+
+
+
       // TODO: 3. Write the result to the new grid
 
       // TODO(once you pass the conformance test): measure with nvprof, and
