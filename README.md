@@ -76,7 +76,7 @@ The end-goal is to get the fastest implementation of the game of life, as judged
 First, complete the initial TODOs in conway.cu and make sure your code matches the reference implementation. You can use `python conway.py test` to check if your implementation is correct.
 
 Then, you have to find ways to make the program faster! Don't hesitate to use the profiling tools:
-- [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/index.html): `nsys -t cuda -s none python profile --grid-size 4000 --iterations 1` will produce a `.nsys-rep` file that you can open with Nsight Systems.
-- [Nsight Compute](https://docs.nvidia.com/nsight-compute): `ncu -o kernel_profile --set full -s 3 -c 1 -k game_of_life_kernel python profile --grid-size 4000 --iterations 1` will produce a `.ncu-rep` file that you can open with Nsight Compute.
+- [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/index.html): `nsys profile -t cuda -s none python conway.py profile --grid-size 4000 --iterations 1` will produce a `.nsys-rep` file that you can open with Nsight Systems.
+- [Nsight Compute](https://docs.nvidia.com/nsight-compute): `ncu -o kernel_profile --set full -s 3 -c 1 -k game_of_life_kernel python conway.py profile --grid-size 4000 --iterations 1` will produce a `.ncu-rep` file that you can open with Nsight Compute.
 
 You and your team have to write a report of the different optimizations you tried, **why** you tried them, and the results you obtained.

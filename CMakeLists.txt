@@ -2,6 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(conway)
 
+set(Python3_FIND_VIRTUALENV FIRST)
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 
 execute_process(
@@ -11,8 +12,14 @@ execute_process(
 )
 set(CMAKE_PREFIX_PATH ${TORCH_CMAKE_PREFIX_PATH})
 
+# Help Torch find nvtx if it's in the standard CUDA targets location
+if(NOT nvtx3_dir AND EXISTS "/usr/local/cuda/targets/x86_64-linux/include/nvtx3")
+    set(nvtx3_dir "/usr/local/cuda/targets/x86_64-linux/include")
+endif()
+
 find_package(Torch REQUIRED)
 find_library(TORCH_PYTHON_LIBRARY torch_python PATH "${TORCH_INSTALL_PREFIX}/lib")
+
 find_package(CUDA REQUIRED)
 
 

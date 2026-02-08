@@ -1,2 +1,8 @@
 build/
 venv/
+*.log
+*.aux
+*.out
+*.toc
+*.fdb_latexmk
+*.fls

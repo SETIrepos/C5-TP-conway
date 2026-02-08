@@ -1,0 +1,260 @@
+\documentclass[a4paper,12pt]{article}
+
+% Packages usuels et encodage
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french, provide=*]{babel}
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{booktabs} % Pour de jolis tableaux
+\usepackage{pgfplots}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows, positioning, calc}
+\pgfplotsset{compat=1.17}
+
+% Configuration de la mise en page
+\geometry{hmargin=2.5cm,vmargin=2.5cm}
+
+% Configuration pour l'insertion de code (C/C++)
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2,
+    language=C++
+}
+\lstset{style=mystyle}
+
+\title{Compte Rendu : Implémentation du Game of Life en CUDA}
+\author{Hugo}
+\date{8 Février 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+Ce document présente l'implémentation du noyau CUDA pour le Jeu de la Vie et les optimisations testées.
+
+\section{Validation et Configuration}
+L'exactitude de l'implémentation a été vérifiée en comparant les résultats du GPU avec une implémentation de référence en PyTorch. L'exécution de la commande suivante confirme la correspondance des résultats :
+\begin{verbatim}
+python conway.py test
+> Both implementations match
+\end{verbatim}
+
+La configuration matérielle utilisée pour les tests est la suivante :
+\begin{verbatim}
+NVIDIA-SMI 535.288.01 Driver Version: 535.288.01 CUDA Version: 12.2
+GPU: NVIDIA GeForce GTX 1070 (8192MiB)
+\end{verbatim}
+
+\section{Performances et Optimisations}
+Une optimisation préliminaire a consisté à utiliser le type \texttt{unsigned char} (1 octet) au lieu de \texttt{int} (4 octets) pour stocker les états des cellules. Cette modification permet de diviser par quatre l'empreinte mémoire de la grille et d'optimiser l'utilisation de la bande passante mémoire ainsi que du cache.
+
+L'implémentation actuelle utilise également des \textbf{grid-stride loops} pour permettre au noyau de traiter des grilles de n'importe quelle taille, indépendamment de la taille de la grille de blocs CUDA. Cela améliore la robustesse et permet une meilleure réutilisation des threads.
+
+Plusieurs versions du noyau ont été testées pour l'application des règles du Jeu de la Vie.
+
+\subsection{Version 1 : Expression Booléenne Directe}
+Cette version utilise une expression logique concise pour déterminer l'état suivant :
+\begin{lstlisting}[language=C++]
+new_grid[idx] = alive_neighbors == 3 || (grid[idx] == 1 && alive_neighbors == 2);
+\end{lstlisting}
+Performance obtenue : \textbf{1001 FPS}.
+
+\subsection{Version 2 : Branchements Conditionnels}
+Cette version utilise des structures \texttt{if/else} plus explicites (bien que logiquement redondantes dans ce cas précis) :
+\begin{lstlisting}[language=C++]
+new_grid[idx] = 0;
+if (grid[idx] == 0 && alive_neighbors == 3 || 
+    (grid[idx] == 1 && (alive_neighbors == 4 || alive_neighbors == 3))) {
+    new_grid[idx] = 1;
+}
+else if (grid[idx] == 1 && (alive_neighbors == 4 || alive_neighbors == 3)) {
+    new_grid[idx] = 1;
+}
+\end{lstlisting}
+Performance obtenue : \textbf{1057.26 FPS}.
+
+\subsection{Version 3 : Mémoire Partagée (Shared Memory)}
+L'optimisation repose sur l'utilisation de la \textit{Shared Memory}. L'idée est de réduire les accès à la mémoire globale lente en chargeant une tuile de données dans une mémoire locale rapide partagée par les threads d'un même bloc.
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        % Grille Globale
+        \draw[step=0.5cm,gray,very thin] (0,0) grid (4,4);
+        \draw[line width=1.5pt, blue] (1,1) rectangle (3,3);
+        \node[blue, above] at (2,3) {Bloc (32x32)};
+        
+        % Halo
+        \draw[line width=1pt, red, dashed] (0.5,0.5) rectangle (3.5,3.5);
+        \node[red, below] at (2,0.5) {Halo (34x34)};
+        
+        % Annotation
+        \draw[->, >=stealth, thick] (4.5,2) -- (6.5,2) node[midway, above] {Chargement};
+        
+        % Shared Memory
+        \begin{scope}[shift={(7,1)}]
+            \draw[fill=yellow!20] (0,0) rectangle (2,2);
+            \draw[step=0.5cm, black, thin] (0,0) grid (2,2);
+            \node at (1,-0.5) {Shared Memory Tile};
+        \end{scope}
+    \end{tikzpicture}
+    \caption{Schéma du chargement de la tuile et du halo en mémoire partagée.}
+\end{figure}
+
+Chaque bloc de 32x32 threads charge une zone de 34x34 (\textit{halo} de 1 pixel) pour permettre le calcul des voisins sur les bords sans accès mémoire globale supplémentaire.
+
+L'implémentation du noyau utilisant la mémoire partagée est la suivante :
+
+\begin{lstlisting}[language=C++]
+__global__ void game_of_life_kernel(unsigned char *grid, unsigned char *new_grid, int width, int height) {
+    __shared__ unsigned char tile[34][34];
+    int tx = threadIdx.x; int ty = threadIdx.y;
+    int x = blockIdx.x * 32 + tx; int y = blockIdx.y * 32 + ty;
+
+    // Chargement collaboratif avec halo
+    int tid = ty * 32 + tx;
+    int block_start_x = blockIdx.x * 32 - 1;
+    int block_start_y = blockIdx.y * 32 - 1;
+
+    for (int i = tid; i < 34 * 34; i += 1024) {
+        int ly = i / 34; int lx = i % 34;
+        int gx = block_start_x + lx; int gy = block_start_y + ly;
+        unsigned char val = 0;
+        if (gx >= 0 && gx < width && gy >= 0 && gy < height)
+            val = grid[gy * width + gx];
+        tile[ly][lx] = val;
+    }
+    __syncthreads();
+
+    if (x < width && y < height) {
+        int sx = tx + 1; int sy = ty + 1;
+        int neighbors = tile[sy-1][sx-1] + tile[sy-1][sx] + tile[sy-1][sx+1] +
+                        tile[sy][sx-1]   +                  tile[sy][sx+1] +
+                        tile[sy+1][sx-1] + tile[sy+1][sx] + tile[sy+1][sx+1];
+        unsigned char current = tile[sy][sx];
+        new_grid[y * width + x] = (neighbors == 3) | (current & (neighbors == 2));
+    }
+}
+\end{lstlisting}
+
+Performance obtenue : \textbf{1165.18 FPS}.
+
+\subsection{Version 4 : Lookup Table (LUT) et Vectorisation}
+Pour cette version, nous changeons de paradigme. Au lieu de calculer l'état futur cellule par cellule, nous utilisons une table de correspondance (Lookup Table) précalculée.
+
+L'idée est qu'un bloc de $2 \times 2$ cellules (4 pixels) dépend entièrement de l'état d'un bloc de $4 \times 4$ cellules qui l'entoure.
+Un bloc de $4 \times 4$ contient 16 cellules, ce qui correspond exactement à un entier de 16 bits ($2^{16} = 65536$ possibilités).
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        % Grille 4x4
+        \draw[step=1cm, gray, thin] (0,0) grid (4,4);
+        \node[above] at (2,4) {Entrée : index 16 bits (4x4)};
+        
+        % Cellules centrales 2x2
+        \fill[blue!20] (1,1) rectangle (3,3);
+        \draw[step=1cm, blue, thick] (1,1) grid (3,3);
+        \node at (2,2) { \small Sortie (2x2)};
+        
+        % Flèche vers LUT
+        \draw[->, >=stealth, very thick] (4.5, 2) -- (6.5, 2) node[midway, above] {LUT[index]};
+        
+        % Résultat
+        \draw (7, 1) rectangle (9, 3);
+        \draw[step=1cm, black] (7,1) grid (9,3);
+        \node[above] at (8,3) {Résultat 4 bits};
+    \end{tikzpicture}
+    \caption{Principe de la LUT : Un voisinage 4x4 détermine le futur des 4 cellules centrales.}
+\end{figure}
+
+Nous précalculons donc une table de 65536 entrées en mémoire globale. Chaque entrée contient les 4 bits de résultat pour le bloc central.
+
+Le noyau CUDA est modifié pour que **chaque thread traite désormais 4 pixels** (un bloc $2 \times 2$). Le nombre de threads est donc divisé par 4, réduisant le surcoût de lancement et augmentant l'intensité arithmétique (ici remplacée par des opérations sur les bits).
+
+\begin{lstlisting}[language=C++]
+// Extrait du kernel
+int tile_r = 2 * ty;
+int tile_c = 2 * tx;
+uint16_t state_idx = 0;
+
+// Construction de l'index 16 bits depuis la shared memory
+#pragma unroll
+for (int r = 0; r < 4; r++) {
+    for (int c = 0; c < 4; c++) {
+        if (tile[tile_r + r][tile_c + c]) {
+            state_idx |= (1 << (r * 4 + c));
+        }
+    }
+}
+
+// Lecture unique en memoire pour 4 pixels
+unsigned char res = lut[state_idx];
+
+// Ecriture des 4 pixels
+new_grid[...] = (res >> 0) & 1;
+new_grid[...] = (res >> 1) & 1;
+// ... (idem pour les 2 autres)
+\end{lstlisting}
+
+Performance obtenue : \textbf{2455.34 FPS}.
+C'est un gain considérable (\textbf{+110\%} par rapport à la version shared memory) qui s'explique par la vectorisation du travail (1 thread = 4 pixels) et la suppression complète des branchements et des calculs arithmétiques au profit d'opérations bit-à-bit très rapides.
+
+\section{Analyse}
+De manière surprenante, la version avec branchements (Version 2) affiche une performance légèrement supérieure à la version booléenne compacte. 
+Cependant, l'introduction de la \textbf{Shared Memory} (Version 3) a apporté un premier gain important. 
+Enfin, l'approche \textbf{Lookup Table} (Version 4) écrase les précédentes en transformant le problème de calcul en un problème d'accès mémoire optimisé et vectorisé.
+
+\subsection{Version 5 : Maximisation de l'Occupation (1024 Threads)}
+L'optimisation précédente utilisait des blocs de $16 \times 16$ threads (256 threads) couvrant une zone de $32 \times 32$ pixels.
+Cependant, les GPU modernes supportent jusqu'à 1024 threads par bloc.
+
+Nous avons donc augmenté la taille des blocs à $32 \times 32$ threads (1024 threads). Comme chaque thread traite toujours un carré de $2 \times 2$ pixels, chaque bloc CUDA couvre désormais une zone de $64 \times 64$ pixels sur la grille.
+
+\textbf{Avantages :}
+\begin{itemize}
+    \item Meilleure occupation du multiprocesseur (SM).
+    \item Réduction du ratio \textit{Halo / Données utiles}. Pour une tuile de $32^2$ pixels, le halo est de $34^2 - 32^2 = 132$ pixels. Pour $64^2$ pixels, le halo est de $66^2 - 64^2 = 260$ pixels. Le ratio halo/pixels passe de $132/1024 \approx 12.8\%$ à $260/4096 \approx 6.3\%$.
+\end{itemize}
+
+Résumé des performances :
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+Version & FPS \\
+\midrule
+Naive (Booléenne) & 1001.00 \\
+Naive (Branchements) & 1057.26 \\
+Shared Memory & 1165.18 \\
+Lookup Table (256 threads) & 2455.34 \\
+\textbf{Lookup Table (1024 threads)} & \textbf{--} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}
