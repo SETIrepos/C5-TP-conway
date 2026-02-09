@@ -252,6 +252,12 @@ __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int widt
     uint16_t S  = tile[ly + 1][lx    ];
     uint16_t SE = tile[ly + 1][lx + 1];
 
+    uint16_t v = NO | N | NE | O | C | E | SO | S | SE;
+    if (v == 0) {
+        new_grid[gid_y * width + gid_x] = 0;
+        return;
+    }
+
     uint64_t patch = build_patch6x6(NO, N, NE, O, C, E, SO, S, SE);
 
     // get 4 indices for quadrants

@@ -242,24 +242,7 @@ Nous avons donc augmenté la taille des blocs à $32 \times 32$ threads (1024 th
     \item Réduction du ratio \textit{Halo / Données utiles}. Pour une tuile de $32^2$ pixels, le halo est de $34^2 - 32^2 = 132$ pixels. Pour $64^2$ pixels, le halo est de $66^2 - 64^2 = 260$ pixels. Le ratio halo/pixels passe de $132/1024 \approx 12.8\%$ à $260/4096 \approx 6.3\%$.
 \end{itemize}
 
-Résumé des performances :
-\begin{center}
-\begin{tabular}{lc}
-\toprule
-Version & FPS \\
-\midrule
-Naive (Booléenne) & 1001.00 \\
-Naive (Branchements) & 1057.26 \\
-Shared Memory & 1165.18 \\
-Lookup Table (256 threads) & 2455.34 \\
-\textbf{Lookup Table (1024 threads)} & \textbf{--} \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\newpage
-\section{Version Finale : Bit-Patching et Registres 64-bits}
-
+subsection{Version 5 : LUT + uint16\_t}
 Dans cette version, on exploite les registres 64 bits du GPU.
 Chaque thread est responsable d'un entier \texttt{uint16\_t}, qui représente un bloc de $4 \times 4$ cellules.
 
@@ -407,6 +390,33 @@ uint16_t result = (res_TL) | (res_TR << 2) | ...;
     \item \textbf{Parallélisme de bits :} En manipulant des \texttt{uint16} et \texttt{uint64}, nous traitons 16 cellules simultanément par thread avec un nombre d'instructions très faible.
 \end{enumerate}
 
-Cette implémentation représente l'état de l'art pour les automates cellulaires sur GPU, transformant un problème de calcul arithmétique en un problème de pure manipulation de bits.
+\textbf{Performance obtenue :} \textbf{3208.89 FPS}, soit un gain de plus de 30\% par rapport à la version LUT précédente.
+
+
+
+Résumé des performances :
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+Version & FPS \\
+\midrule
+Naive (Booléenne) & 1001.00 \\
+Naive (Branchements) & 1057.26 \\
+Shared Memory & 1165.18 \\
+Lookup Table (4x4) & 2455.34 \\
+\textbf{Lookup Table + uint16} & \textbf{3208.89} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Résultat mesuré}
+La version actuelle du code (Lookup Table avec 1024 threads par bloc et bit-patching) atteint une performance mesurée de **FPS = 3208.89** sur la configuration matérielle indiquée. Cette valeur provient d'un benchmark réalisé avec la commande :
+\begin{verbatim}
+python conway.py profile --grid-size 4000 --iterations 1000
+\end{verbatim}
+
+\newpage
+\section{Version Finale : Bit-Patching et Registres 64-bits}
+
 
 \end{document}
