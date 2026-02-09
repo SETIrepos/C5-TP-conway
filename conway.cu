@@ -63,6 +63,50 @@ void precompute_lut() {
 // Pour la version LUT, un thread traite 2x2 pixels, donc le block de thread est plus petit
 #define LUT_THREAD_DIM (TILE_DIM / 2) 
 
+__global__ void compute_lut_kernel() {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= 65536) return;
+
+    // On reconstruite une mini-grille temporaire
+    int temp_grid[4][4];
+    for (int bit = 0; bit < 16; bit++) {
+        // Mapping lineaire : 0..3 -> ligne 0, 4..7 -> ligne 1...
+        int r = bit / 4;
+        int c = bit % 4;
+        temp_grid[r][c] = (idx >> bit) & 1;
+    }
+
+    // On calcule le résultat pour le bloc 2x2 central
+    // Correspondants aux indices (1,1), (1,2), (2,1), (2,2)
+    unsigned char result_mask = 0;
+    
+    // Coordonnées relatives des 4 pixels cibles
+    int targets[4][2] = {{1,1}, {1,2}, {2,1}, {2,2}};
+    
+    for (int k = 0; k < 4; k++) {
+        int r = targets[k][0];
+        int c = targets[k][1];
+        
+        // Compter voisins
+        int neighbors = 0;
+        for (int dr = -1; dr <= 1; dr++) {
+            for (int dc = -1; dc <= 1; dc++) {
+                if (dr == 0 && dc == 0) continue;
+                neighbors += temp_grid[r + dr][c + dc];
+            }
+        }
+        
+        int self = temp_grid[r][c];
+        int alive = (neighbors == 3) || (self == 1 && neighbors == 2);
+        
+        if (alive) {
+            result_mask |= (1 << k);
+        }
+    }
+    host_lut[idx] = result_mask;
+
+}
+
 __global__ void game_of_life_kernel(unsigned char *grid, unsigned char *new_grid, int width, int height, unsigned char* lut) {
     __shared__ unsigned char tile[HALO_DIM][HALO_DIM];
 
@@ -174,4 +218,4 @@ void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
 }
 
 
-// TODO : faire en sorte que un thread fasse 8 pixels (2x4) on utilise tout les bit d'un octet de la LUT 
+// TODO : faire une lookup table 3 par 3 et faire un indice de 512 bits (9 bits pour les voisins) pour calculer directement le résultat d'un pixel. chaque thread se deplace pour faire 2 par 2 cellules mais pourquoi faire cela pourquoi chaque thread ferais 2 par 2 cellules ?
