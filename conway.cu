@@ -1,10 +1,8 @@
 #include "conway.h"
 #include <c10/cuda/CUDAStream.h>
 #include <torch/extension.h>
+#include <omp.h>
 
-// ==========================================
-// LOOKUP TABLE LOGIC
-// ==========================================
 
 unsigned char* d_lut = nullptr; 
 
@@ -14,6 +12,7 @@ void precompute_lut() {
     unsigned char host_lut[65536];
     
     // Pour chaque configuration possible de 4x4 (16 bits)
+    #pragma omp parallel for
     for (int i = 0; i < 65536; i++) {
         // On reconstruite une mini-grille temporaire
         int temp_grid[4][4];

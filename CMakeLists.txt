@@ -21,6 +21,7 @@ find_package(Torch REQUIRED)
 find_library(TORCH_PYTHON_LIBRARY torch_python PATH "${TORCH_INSTALL_PREFIX}/lib")
 
 find_package(CUDA REQUIRED)
+find_package(OpenMP REQUIRED)
 
 
 add_library(conway SHARED conway.cpp conway.cu)
@@ -30,4 +31,5 @@ set_target_properties(conway PROPERTIES CUDA_SEPARABLE_COMPILATION ON
                                         PREFIX ""
                                         SUFFIX ".${Python3_SOABI}.so")
 target_include_directories(conway PRIVATE ${Python3_INCLUDE_DIRS} ${TORCH_INCLUDE_DIRS})
-target_link_libraries(conway ${TORCH_LIBRARIES} ${TORCH_PYTHON_LIBRARY} ${CUDA_LIBRARIES} ${Python3_LIBRARIES})
+target_link_libraries(conway ${TORCH_LIBRARIES} ${TORCH_PYTHON_LIBRARY} ${CUDA_LIBRARIES} ${Python3_LIBRARIES} OpenMP::OpenMP_CXX)
+target_compile_options(conway PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fopenmp>)
