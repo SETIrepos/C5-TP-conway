@@ -7,7 +7,8 @@ from build import conway
 
 def profile(grid_size, **kwargs):
     grid_ping = torch.randint(0, 65536, (grid_size//4, grid_size//4), dtype=torch.uint16, device="cuda")
-    grid_pong = torch.empty_like(grid_ping)
+    grid_pong1 = torch.empty_like(grid_ping)
+    grid_pong2 = torch.empty_like(grid_ping)
     game = conway.GameOfLife()
 
     stream = torch.cuda.Stream()
@@ -15,18 +16,18 @@ def profile(grid_size, **kwargs):
     end = torch.cuda.Event(enable_timing=True)
 
     for _ in range(5): # warmup
-        game.step(grid_ping, grid_pong, stream)
-        grid_ping, grid_pong = grid_pong, grid_ping
+        game.step(grid_ping, grid_pong1, grid_pong2, stream)
+        grid_ping, grid_pong2 = grid_pong2, grid_ping
 
     # profile
     start.record(stream)
     for _ in range(kwargs["iterations"]):
-        game.step(grid_ping, grid_pong, stream)
-        grid_ping, grid_pong = grid_pong, grid_ping
+        game.step(grid_ping, grid_pong1, grid_pong2, stream)
+        grid_ping, grid_pong2 = grid_pong2, grid_ping
     end.record(stream)
     stream.synchronize()
 
-    print(f"FPS={kwargs['iterations'] / start.elapsed_time(end) * 1000:.2f}")
+    print(f"FPS={kwargs['iterations']*2 / start.elapsed_time(end) * 1000:.2f}")
 
 
 def pack_grid(full):
@@ -68,14 +69,15 @@ def test(**kwargs):
 
     # Pack for GPU implementation (each uint16 encodes a 4x4 block)
     packed_grid = pack_grid(grid)
-    packed_out = torch.zeros_like(packed_grid)
+    packed_out1 = torch.zeros_like(packed_grid)
+    packed_out2 = torch.zeros_like(packed_grid) # dummy second output for kernel signature
 
     # Call GPU implementation which expects uint16 packed representation
     game = conway.GameOfLife()
-    game.step(packed_grid, packed_out, None)
+    game.step(packed_grid, packed_out1, packed_out2)
 
     # Unpack GPU output to full grid for comparison
-    out = unpack_grid(packed_out)
+    out = unpack_grid(packed_out1)
 
     match = torch.all(torch.eq(torch_out, out))
     if match:
