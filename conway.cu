@@ -65,9 +65,9 @@ void precompute_lut() {
 }
 
 #define BLOCK_DIM 32
-#define HALO_DIM (BLOCK_DIM + 2) // 32 + 2 pour le halo de 1 uint16_t
+#define HALO_DIM (BLOCK_DIM + 4) // 32 + 4 to allow 2 steps of evolution (Radius 2)
 
-// __global__ void compute_lut_kernel() {
+// ... existing code ...
 //     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 //     if (idx >= 65536) return;
 
@@ -300,7 +300,14 @@ __device__ static inline uint64_t assemble64_from_quadrants(uint8_t q00, uint8_t
 }
 
 __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid1, uint16_t *new_grid2, int width, int height, unsigned char* lut) {
-    __shared__ uint16_t tile[HALO_DIM][HALO_DIM];
+    // Need two buffers for double buffering logic? Or just one big initial tile and one intermediate tile.
+    // T0 Tile: Radius 2 needed. Size 36x36.
+    // T1 Tile: Radius 1 needed. Size 34x34. Can fit in 36x36 buffer.
+    
+    // We can't overwrite T0 while neighbors read it.
+    // So we need distinct storage.
+    __shared__ uint16_t tile0[HALO_DIM][HALO_DIM];
+    __shared__ uint16_t tile1[HALO_DIM][HALO_DIM]; // Only needs [1..34][1..34] effectively
 
     int tx = threadIdx.x; // 0..BLOCK_DIM-1
     int ty = threadIdx.y; // 0..BLOCK_DIM-1
@@ -308,9 +315,10 @@ __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid1, uint16_
     int tid = ty * BLOCK_DIM + tx;
     int num_threads = BLOCK_DIM * BLOCK_DIM;
 
-    // Origine de lecture : Coin haut-gauche du bloc de uint16 moins 1 (halo)
-    int read_base_x = blockIdx.x * BLOCK_DIM - 1;
-    int read_base_y = blockIdx.y * BLOCK_DIM - 1;
+    // Load T0 (Radius 2)
+    // Origin: Block start - 2
+    int read_base_x = blockIdx.x * BLOCK_DIM - 2;
+    int read_base_y = blockIdx.y * BLOCK_DIM - 2;
 
     for (int i = tid; i < HALO_DIM * HALO_DIM; i += num_threads) {
         int ly = i / HALO_DIM;
@@ -323,96 +331,134 @@ __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid1, uint16_
         if (gx >= 0 && gx < width && gy >= 0 && gy < height) {
             val = grid[gy * width + gx];
         }
-        tile[ly][lx] = val;
+        tile0[ly][lx] = val;
     }
 
     __syncthreads();
 
-    // Local position inside the tile (centered at +1,+1)
-    int lx = tx + 1;
-    int ly = ty + 1;
+    // Step 1: Compute T1 for Radius 1 region (Indices 1..34 in tile0)
+    // We need to fill tile1[1..34][1..34]
+    // Map threads to cover this area. Area size: (BLOCK_DIM+2)^2 = 34*34 = 1156.
+    // num_threads = 1024.
+    
+    int t1_dim = BLOCK_DIM + 2;
+    int t1_offset = 1; // start index in tile array
+    
+    for (int i = tid; i < t1_dim * t1_dim; i += num_threads) {
+        int ry = i / t1_dim; // 0..33 relative to T1 region
+        int rx = i % t1_dim;
 
-    // Global output coordinates (in units of uint16 blocks)
+        int ly = ry + t1_offset; // index in tile0
+        int lx = rx + t1_offset;
+
+        // Load 3x3 neighborhood from tile0 centered at ly, lx
+        uint16_t NO = tile0[ly - 1][lx - 1];
+        uint16_t N  = tile0[ly - 1][lx    ];
+        uint16_t NE = tile0[ly - 1][lx + 1];
+        uint16_t O  = tile0[ly    ][lx - 1];
+        uint16_t C  = tile0[ly    ][lx    ];
+        uint16_t E  = tile0[ly    ][lx + 1];
+        uint16_t SO = tile0[ly + 1][lx - 1];
+        uint16_t S  = tile0[ly + 1][lx    ];
+        uint16_t SE = tile0[ly + 1][lx + 1];
+
+        // Standard 1-step computation
+        if ((NO | N | NE | O | C | E | SO | S | SE) == 0) {
+            tile1[ly][lx] = 0;
+            continue;
+        }
+
+        // We only need the central 4x4 result here (T+1)
+        // Manual 4 quadrants lookup
+        // We can reuse the build_patch8x8 but it is overkill? 
+        // No, build_patch8x8 is for 2-step.
+        // For 1-step, we just need the 16-bit result for 'C'.
+        // Let's implement a lighter build_patch4x4+2 = 6x6 patch builder for 1 step?
+        // Actually, we can just grab the 4 quadrants directly from the 3x3 uint16s.
+        
+        // Let's use build_patch8x8 because we have it, but maybe optimize later?
+        // Wait, build_patch8x8 gives 8x8 bits.
+        // To get T+1 for C (4x4), we need 6x6 bits.
+        // build_patch8x8 is fine.
+        
+        uint64_t patch = build_patch8x8(NO, N, NE, O, C, E, SO, S, SE);
+        
+        // Extract 4 quadrants for T+1
+        // The patch is 8x8. C corresponds to offsets 2..5.
+        // We need 2x2 results for inputs at:
+        // TL (0,0 in C) -> needs bits [1..4]x[1..4] from Patch relative to C? No.
+        // C is at offset 2. C's range is [2..5].
+        // To get result at C_row=0, C_col=0, we need bits centered there.
+        // The LUT takes a 4x4 input.
+        // TL (0,0) quadrant needs 4x4 input centered at intersection? No.
+        // LUT: 4x4 input (0..3) -> 2x2 output (1..2).
+        // 
+        // We want output at C coordinates 0..1 (TL quadrant).
+        // This corresponds to patch coordinates 2..3.
+        // This output requires input patch coordinates 1..4.
+        // So start_row=1, start_col=1.
+        
+        uint16_t idx_tl = extract_4x4_idx_from_patch64(patch, 1, 1);
+        uint16_t idx_tr = extract_4x4_idx_from_patch64(patch, 1, 3);
+        uint16_t idx_bl = extract_4x4_idx_from_patch64(patch, 3, 1);
+        uint16_t idx_br = extract_4x4_idx_from_patch64(patch, 3, 3);
+
+        uint8_t r_tl = lut[idx_tl];
+        uint8_t r_tr = lut[idx_tr];
+        uint8_t r_bl = lut[idx_bl];
+        uint8_t r_br = lut[idx_br];
+
+        tile1[ly][lx] = assemble_from_quadrants(r_tl, r_tr, r_bl, r_br);
+    }
+
+    __syncthreads();
+
+    // Step 2 & Final Write
+    // Global Coords for T2
     int gid_x = blockIdx.x * BLOCK_DIM + tx;
     int gid_y = blockIdx.y * BLOCK_DIM + ty;
 
-    // If outside the grid, nothing to do
     if (gid_x >= width || gid_y >= height) return;
 
-    // Load the 3x3 neighborhood from shared tile
-    uint16_t NO = tile[ly - 1][lx - 1];
-    uint16_t N  = tile[ly - 1][lx    ];
-    uint16_t NE = tile[ly - 1][lx + 1];
-    uint16_t O  = tile[ly    ][lx - 1];
-    uint16_t C  = tile[ly    ][lx    ];
-    uint16_t E  = tile[ly    ][lx + 1];
-    uint16_t SO = tile[ly + 1][lx - 1];
-    uint16_t S  = tile[ly + 1][lx    ];
-    uint16_t SE = tile[ly + 1][lx + 1];
+    // For T2, we need neighborhood from tile1
+    // Center is lx = tx + 2, ly = ty + 2 (Because tile mapping starts at -2)
+    // tx=0 -> lx=2. Radius 1 lookup needs lx-1 = 1. Valid (tile1 filled from 1..34).
+    int lx = tx + 2;
+    int ly = ty + 2;
 
-    uint16_t v = NO | N | NE | O | C | E | SO | S | SE;
-    if (v == 0) {
-        new_grid1[gid_y * width + gid_x] = 0;
-        // new_grid2[gid_y * width + gid_x] = 0;
+    uint16_t res1 = tile1[ly][lx];
+    new_grid1[gid_y * width + gid_x] = res1;
+
+    // Load 3x3 from tile1 for T2
+    uint16_t NO = tile1[ly - 1][lx - 1];
+    uint16_t N  = tile1[ly - 1][lx    ];
+    uint16_t NE = tile1[ly - 1][lx + 1];
+    uint16_t O  = tile1[ly    ][lx - 1];
+    uint16_t C  = tile1[ly    ][lx    ];
+    uint16_t E  = tile1[ly    ][lx + 1];
+    uint16_t SO = tile1[ly + 1][lx - 1];
+    uint16_t S  = tile1[ly + 1][lx    ];
+    uint16_t SE = tile1[ly + 1][lx + 1];
+
+    if ((NO | N | NE | O | C | E | SO | S | SE) == 0) {
+        new_grid2[gid_y * width + gid_x] = 0;
         return;
     }
 
     uint64_t patch = build_patch8x8(NO, N, NE, O, C, E, SO, S, SE);
-
-    // get 4 indices for quadrants
-    uint16_t idx_00 = extract_4x4_idx_from_patch64(patch, 0, 0);
-    uint16_t idx_01 = extract_4x4_idx_from_patch64(patch, 0, 2);
-    uint16_t idx_02 = extract_4x4_idx_from_patch64(patch, 0, 4);
-    uint16_t idx_10 = extract_4x4_idx_from_patch64(patch, 2, 0);
-    uint16_t idx_11 = extract_4x4_idx_from_patch64(patch, 2, 2);
-    uint16_t idx_12 = extract_4x4_idx_from_patch64(patch, 2, 4);
-    uint16_t idx_20 = extract_4x4_idx_from_patch64(patch, 4, 0);
-    uint16_t idx_21 = extract_4x4_idx_from_patch64(patch, 4, 2);
-    uint16_t idx_22 = extract_4x4_idx_from_patch64(patch, 4, 4);
-
-    uint8_t res_00 = lut[idx_00];
-    uint8_t res_01 = lut[idx_01];
-    uint8_t res_02 = lut[idx_02];
-    uint8_t res_10 = lut[idx_10];
-    uint8_t res_11 = lut[idx_11];
-    uint8_t res_12 = lut[idx_12];
-    uint8_t res_20 = lut[idx_20];
-    uint8_t res_21 = lut[idx_21];
-    uint8_t res_22 = lut[idx_22];
-
-    uint64_t result1 = assemble64_from_quadrants(res_00, res_01, res_02, res_10, res_11, res_12, res_20, res_21, res_22);
-
-    // Write result 1 (Frame T+1)
-    // The 6x6 patch contains the T+1 result. The center 4x4 (offset 1,1) corresponds to this thread's block.
-    // layout: 
-    // 0 1 2 3 4 5
-    // 1 X X X X 
-    // 2 X X X X
-    // 3 X X X X 
-    // 4 X X X X
-    // 5
-    new_grid1[gid_y * width + gid_x] = extract_4x4_idx_from_patch36(result1, 1, 1);
-
-    // Compute result 2 (Frame T+2) using the 6x6 patch from T+1
-    // We need 4 lookups to build the 4x4 result.
-    // TL (0,0) -> 2x2 result at TL
-    // TR (0,2) -> 2x2 result at TR
-    // BL (2,0) -> 2x2 result at BL
-    // BR (2,2) -> 2x2 result at BR
     
-    uint16_t idx2_tl = extract_4x4_idx_from_patch36(result1, 0, 0);
-    uint16_t idx2_tr = extract_4x4_idx_from_patch36(result1, 0, 2);
-    uint16_t idx2_bl = extract_4x4_idx_from_patch36(result1, 2, 0);
-    uint16_t idx2_br = extract_4x4_idx_from_patch36(result1, 2, 2);
+    // Same offsets for T2
+    uint16_t idx_tl = extract_4x4_idx_from_patch64(patch, 1, 1);
+    uint16_t idx_tr = extract_4x4_idx_from_patch64(patch, 1, 3);
+    uint16_t idx_bl = extract_4x4_idx_from_patch64(patch, 3, 1);
+    uint16_t idx_br = extract_4x4_idx_from_patch64(patch, 3, 3);
 
-    uint8_t res2_tl = lut[idx2_tl];
-    uint8_t res2_tr = lut[idx2_tr];
-    uint8_t res2_bl = lut[idx2_bl];
-    uint8_t res2_br = lut[idx2_br];
+    uint8_t r_tl = lut[idx_tl];
+    uint8_t r_tr = lut[idx_tr];
+    uint8_t r_bl = lut[idx_bl];
+    uint8_t r_br = lut[idx_br];
 
-    uint16_t result2 = assemble_from_quadrants(res2_tl, res2_tr, res2_bl, res2_br);
-
-    new_grid2[gid_y * width + gid_x] = result2;
+    new_grid2[gid_y * width + gid_x] = assemble_from_quadrants(r_tl, r_tr, r_bl, r_br);
 }
 
 void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out1, torch::Tensor grid_out2, std::optional<torch::Stream> stream) {
