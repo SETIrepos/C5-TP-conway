@@ -257,4 +257,156 @@ Lookup Table (256 threads) & 2455.34 \\
 \end{tabular}
 \end{center}
 
+\newpage
+\section{Version Finale : Bit-Patching et Registres 64-bits}
+
+Dans cette version, on exploite les registres 64 bits du GPU.
+Chaque thread est responsable d'un entier \texttt{uint16\_t}, qui représente un bloc de $4 \times 4$ cellules.
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        \draw[step=1cm, black, thick] (0,0) grid (4,4);
+        \node[above] at (2,4.2) {Un \texttt{uint16\_t} (16 bits)};
+        \foreach \y in {0,1,2,3} {
+            \foreach \x in {0,1,2,3} {
+                \pgfmathsetmacro{\idx}{int((3-\y)*4 + \x)}
+                \node at (\x+0.5, \y+0.5) {\tiny bit \idx};
+            }
+        }
+        \draw[<->, red, thick] (4.2,0) -- (4.2,4) node[midway, right] {4 cellules};
+        \draw[<->, red, thick] (0,-0.2) -- (4,-0.2) node[midway, below] {4 cellules};
+    \end{tikzpicture}
+    \caption{Représentation compacte : 16 cellules stockées dans un seul registre.}
+\end{figure}
+
+\subsection{Le Problème du Voisinage}
+Pour calculer l'état futur de notre bloc $4 \times 4$ (Centre), nous avons besoin de connaître l'état de ses voisins immédiats (cellules bordures). Ce voisinage forme une grille de $6 \times 6$ cellules.
+
+Les données nécessaires proviennent de **9 blocs** \texttt{uint16\_t} différents : le bloc central et ses 8 voisins (Nord, Sud, Est, Ouest, et les diagonales).
+
+\subsection{L'Algorithme de "Super-Patch" 64 bits}
+Au lieu d'aller chercher les valeurs en mémoire à chaque calcul, nous construisons un objet virtuel temporaire dans les registres du thread : le **Patch**.
+
+Un carré de $6 \times 6$ cellules correspond à 36 bits.
+Comme $36 < 64$, nous pouvons stocker l'intégralité du voisinage nécessaire dans un seul registre \texttt{uint64\_t}.
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[scale=0.6]
+        % Voisinage 3x3 blocs
+        \foreach \i in {0,1,2} {
+            \foreach \j in {0,1,2} {
+                \draw[gray, thin] (\i*4, \j*4) rectangle (\i*4+4, \j*4+4);
+            }
+        }
+        % Thicker separators between uint16 blocks (every 4 cells)
+        \draw[line width=1.2pt, black] (0,0) rectangle (12,12);
+        \draw[line width=1pt, black] (4,0) -- (4,12); \draw[line width=1pt, black] (8,0) -- (8,12);
+        \draw[line width=1pt, black] (0,4) -- (12,4); \draw[line width=1pt, black] (0,8) -- (12,8);
+
+        % Centre (highlighted) - thicker border for clarity
+        \draw[fill=blue!10, line width=2pt] (4,4) rectangle (8,8);
+        \node at (6,6) {\textbf{Centre}};
+        \node at (6,10) {N}; \node at (10,6) {E}; \node at (2,6) {O}; \node at (6,2) {S};
+        
+        % Zone utile (Patch 6x6)
+        \draw[red, line width=2pt] (3,3) rectangle (9,9);
+        \node[red, above right] at (9,9) {Patch 6x6 (36 bits)};
+        
+        % Flèche vers le registre
+        \draw[->, >=stealth, very thick, bend left] (9,6) to (13,6);
+        
+        % Registre 64 bits
+        \draw[fill=green!10] (13.5, 2) rectangle (15.5, 10);
+        \node[rotate=90] at (14.5, 6) {Registre \texttt{uint64\_t}};
+        
+    \end{tikzpicture}
+    \caption{Construction du Patch : on extrait les bits nécessaires des 9 voisins pour former un seul mot de 64 bits.}
+\end{figure}
+
+Une fois ce \texttt{uint64\_t patch} construit via des opérations bit-à-bit (masques et décalages), le thread n'a plus besoin d'accéder à la mémoire. Il contient toute l'information localement.
+
+% ------------------ Schéma détaillé (6x6) ------------------
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[scale=0.9, every node/.style={font=\small, minimum size=6mm}]
+        % Draw 6x6 cells with numbers
+        \foreach \r in {0,...,5} {
+            \foreach \c in {0,...,5} {
+                \draw (\c,5-\r) rectangle (\c+1,5-\r+1);
+            }
+        }
+        % Fill numbers matching the requested layout (top to bottom)
+        % Row 0 (top): 15 12 13 14 15 12
+        \node at (0.5,5.5) {15}; \node at (1.5,5.5) {12}; \node at (2.5,5.5) {13}; \node at (3.5,5.5) {14}; \node at (4.5,5.5) {15}; \node at (5.5,5.5) {12};
+        % Row 1: 3 0 1 2 3 0
+        \node at (0.5,4.5) {3};  \node at (1.5,4.5) {0};  \node at (2.5,4.5) {1};  \node at (3.5,4.5) {2};  \node at (4.5,4.5) {3};  \node at (5.5,4.5) {0};
+        % Row 2: 7 4 5 6 7 4
+        \node at (0.5,3.5) {7};  \node at (1.5,3.5) {4};  \node at (2.5,3.5) {5};  \node at (3.5,3.5) {6};  \node at (4.5,3.5) {7};  \node at (5.5,3.5) {4};
+        % Row 3: 11 8 9 10 11 8
+        \node at (0.5,2.5) {11}; \node at (1.5,2.5) {8};  \node at (2.5,2.5) {9};  \node at (3.5,2.5) {10}; \node at (4.5,2.5) {11}; \node at (5.5,2.5) {8};
+        % Row 4: 15 12 13 14 15 12
+        \node at (0.5,1.5) {15}; \node at (1.5,1.5) {12}; \node at (2.5,1.5) {13}; \node at (3.5,1.5) {14}; \node at (4.5,1.5) {15}; \node at (5.5,1.5) {12};
+        % Row 5: 3 0 1 2 3 0
+        \node at (0.5,0.5) {3};  \node at (1.5,0.5) {0};  \node at (2.5,0.5) {1};  \node at (3.5,0.5) {2};  \node at (4.5,0.5) {3};  \node at (5.5,0.5) {0};
+
+        % Highlight central 4x4 (the uint16 central)
+        \draw[line width=1.7pt, blue] (1,1) rectangle (5,5);
+        \node[blue] at (3,6.4) {\textbf{uint16 central (4x4)}};
+
+        % Emphasize uint16 block boundaries (every 4 cells) around the center
+        % \draw[line width=1.2pt, black] (-0.1,-0.1) rectangle (6.1,6.1);
+        \draw[line width=1.5pt, black] (1, -0.1) -- (1, 6.1); \draw[line width=1.5pt, black] (5, -0.1) -- (5, 6.1);
+        \draw[line width=1.5pt, black] (-0.1,1) -- (6.1,1); \draw[line width=1.5pt, black] (-0.1,5) -- (6.1,5);
+
+        % Highlight extracted 6x6 area
+        \draw[line width=1.5pt, red, dashed] (0,0) rectangle (6,6);
+        \node[red] at (3, -0.5) {\textbf{Patch 6x6 extrait (avec couronne)}};
+    \end{tikzpicture}
+    \caption{Numérotation des bits dans le bloc central 4x4 et la couronne 6x6 extraite par \texttt{build\_patch6x6}.}
+\end{figure}
+
+\paragraph{Explication détaillée du code}
+Le code effectue pour chaque ligne i de 0 à 5 :
+\begin{itemize}
+    \item i == 0 : on construit la ligne au-dessus (row r-1) à partir des dernières lignes des blocs NO, N, NE. \texttt{mid4 = (N >> 12) \& 0xF} lit la dernière ligne du bloc N; \texttt{left\_bit = (NO >> 15) \& 1} lit le bit le plus à droite (col 3) de la dernière ligne de NO; \texttt{right\_bit = (NE >> 12) \& 1} lit le bit le plus à gauche (col 0) de la dernière ligne de NE.
+    \item i == 1..4 : pour chaque ligne du centre on lit la ligne correspondante de \texttt{C} via \texttt{mid4 = (C >> (4*ri)) \& 0xF} (ri = i-1), et on récupère la colonne de gauche depuis \texttt{O} et la colonne de droite depuis \texttt{E} (bits isolés par des shifts appropriés).
+    \item i == 5 : on construit la ligne sous le centre (row r+4) à partir des premières lignes de SO, S, SE (ex. \texttt{mid4 = (S >> 0) \& 0xF}).
+\end{itemize}
+
+Ces 6 lignes de 6 bits sont concaténées (\texttt{patch |= (uint64\_t)row6 << (6 * i)}) pour former le mot 36 bits logé dans un \texttt{uint64\_t}. Ensuite on extrait des fenêtres 4x4 par décalages successifs pour indexer la LUT.
+
+\subsection{Extraction et Lookup par Quadrants}
+Nous divisons ensuite notre problème $4 \times 4$ en quatre sous-problèmes $2 \times 2$ (quadrants).
+Pour chaque quadrant, nous extrayons une fenêtre de $4 \times 4$ bits depuis le patch 64 bits, ce qui nous donne un index pour interroger la LUT.
+
+\begin{lstlisting}[language=C++]
+// Exemple conceptuel
+uint64_t patch = build_patch6x6(N, S, E, O, ...);
+
+// On extrait 4 fenetres depuis le patch
+uint16_t idx_TL = extract(patch, 0, 0); // Top-Left
+uint16_t idx_TR = extract(patch, 0, 2); // Top-Right
+uint16_t idx_BL = extract(patch, 2, 0); // Bot-Left
+uint16_t idx_BR = extract(patch, 2, 2); // Bot-Right
+
+// Lookup instantanee
+uint8_t res_TL = lut[idx_TL];
+uint8_t res_TR = lut[idx_TR];
+...
+
+// Assemblage final
+uint16_t result = (res_TL) | (res_TR << 2) | ...;
+\end{lstlisting}
+
+\subsection{Avantages de cette méthode}
+\begin{enumerate}
+    \item \textbf{Réduction drastique des accès mémoire :} Une fois les blocs chargés en \textit{Shared Memory}, tout le calcul se fait dans les registres.
+    \item \textbf{Zéro divergence :} Tous les threads exécutent exactement les mêmes opérations binaires, il n'y a aucun \texttt{if/else}.
+    \item \textbf{Parallélisme de bits :} En manipulant des \texttt{uint16} et \texttt{uint64}, nous traitons 16 cellules simultanément par thread avec un nombre d'instructions très faible.
+\end{enumerate}
+
+Cette implémentation représente l'état de l'art pour les automates cellulaires sur GPU, transformant un problème de calcul arithmétique en un problème de pure manipulation de bits.
+
 \end{document}
