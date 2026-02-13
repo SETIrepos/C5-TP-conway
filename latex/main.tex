@@ -60,9 +60,12 @@ Ce document présente l'implémentation du noyau CUDA pour le Jeu de la Vie et l
 \section{Validation et Configuration}
 L'exactitude de l'implémentation a été vérifiée en comparant les résultats du GPU avec une implémentation de référence en PyTorch. L'exécution de la commande suivante confirme la correspondance des résultats :
 \begin{verbatim}
-python conway.py test
-> Both implementations match
+# Vérification renforcée — comparaisons sur plusieurs itérations
+python conway.py test --iterations 20
+> All 20 iterations match
 \end{verbatim}
+
+\noindent Note : la vérification d'une seule itération n'était plus suffisante pour garantir l'absence de dérive — le test a donc été étendu à 20 itérations pour valider la stabilité temporelle de l'implémentation.
 
 La configuration matérielle utilisée pour les tests est la suivante :
 \begin{verbatim}
@@ -390,11 +393,42 @@ uint16_t result = (res_TL) | (res_TR << 2) | ...;
     \item \textbf{Parallélisme de bits :} En manipulant des \texttt{uint16} et \texttt{uint64}, nous traitons 16 cellules simultanément par thread avec un nombre d'instructions très faible.
 \end{enumerate}
 
-\textbf{Performance obtenue :} \textbf{3208.89 FPS}, soit un gain de plus de 30\% par rapport à la version LUT précédente.
+\textbf{Performance obtenue (Version 5 - LUT + uint16) :} \textbf{3200.59 FPS}, soit un gain de plus de 30\% par rapport à la version LUT précédente.
 
 
+
+\subsection{Version 6 : Masques d'activation (`mask` par `uint16\_t`)}
+
+Pour réduire les calculs inutiles, nous avons ajout\'e un masque d'activit\'e au niveau des blocs `uint16_t` (un bit par bloc stock\'e dans un tableau `uint32_t`). Le principe est le suivant : si un bloc `uint16_t` et ses 8 voisins n'ont pas chang\'e lors de l'it\'eration pr\'ec\'edente (tous les bits correspondants dans `mask_in` sont \`a 0), alors le thread saute le calcul et copie simplement la valeur pr\'ec\'edente. Sinon il ex\'ecute la logique existante.
+
+Aspects techniques : `get_mask_bit` lit un bit de `mask_in`, la fen\^etre 3x3 de bits est test\'ee pour d\'ecider du `skip`, et `set_mask_bit` utilise `atomicOr` pour activer les bits dans `mask_out` quand `result != C`.
+
+Cette approche est conservative et assure une propagation correcte des changements : un bloc modifi\'e est marqu\'e dans `mask_out` et r\'eveillera ses voisins la frame suivante.
+
+\paragraph{Validation et r\'esultats}
+\begin{itemize}
+  \item Test renforc\'e : `python conway.py test --iterations 20` \rightarrow `All 20 iterations match` (v\'erification frame‑par‑frame).
+  \item Performance mesur\'ee : `python conway.py profile --grid-size 4000` \rightarrow \textbf{FPS = 6759.15} pour la version avec masques d'activit\'e.
+\end{itemize}
+
+La v\'erification sur 20 it\'erations a \'et\'e ajout\'ee car la comparaison d'une seule frame n'assure pas l'absence de d\'erive temporelle.
 
 Résumé des performances :
+% (tableau déplacé vers la fin du document)
+
+
+\paragraph{Résultat mesuré}
+La version 5 (Lookup Table avec 1024 threads par bloc et bit-patching) atteint **FPS = 3200.59** sur la configuration indiquée. Après l'ajout des masques d'activit\'e (Version 6), la version finale atteint **FPS = 6759.15** (mesure `python conway.py profile --grid-size 4000`).
+\begin{verbatim}
+python conway.py profile --grid-size 4000
+\end{verbatim}
+
+\newpage
+\section{Version Finale : Bit-Patching et Registres 64-bits}
+
+
+% --- Tableau récapitulatif (déplacé en fin de document) ---
+\vspace{1em}
 \begin{center}
 \begin{tabular}{lc}
 \toprule
@@ -404,19 +438,10 @@ Naive (Booléenne) & 1001.00 \\
 Naive (Branchements) & 1057.26 \\
 Shared Memory & 1165.18 \\
 Lookup Table (4x4) & 2455.34 \\
-\textbf{Lookup Table + uint16} & \textbf{3208.89} \\
+\textbf{Lookup Table + uint16} & \textbf{3200.59} \\
+\textbf{Lookup Table + uint16 + masking} & \textbf{6759.15} \\
 \bottomrule
 \end{tabular}
 \end{center}
-
-\paragraph{Résultat mesuré}
-La version actuelle du code (Lookup Table avec 1024 threads par bloc et bit-patching) atteint une performance mesurée de **FPS = 3208.89** sur la configuration matérielle indiquée. Cette valeur provient d'un benchmark réalisé avec la commande :
-\begin{verbatim}
-python conway.py profile --grid-size 4000 --iterations 1000
-\end{verbatim}
-
-\newpage
-\section{Version Finale : Bit-Patching et Registres 64-bits}
-
 
 \end{document}

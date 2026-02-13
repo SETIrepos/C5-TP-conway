@@ -68,7 +68,7 @@ def unpack_grid(packed):
 
 def test(**kwargs):
     iterations = int(kwargs.get("iterations", 20))
-    grid_size = 16
+    grid_size = 128
 
     # Reference (unpacked) initial grid
     ref = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.uint8, device="cuda")
