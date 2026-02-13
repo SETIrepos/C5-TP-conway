@@ -111,6 +111,17 @@ void precompute_lut() {
 
 // }
 
+__device__ inline bool get_mask_bit(const uint32_t* mask, int x, int y, int width, int height) {
+    if (x < 0 || x >= width || y < 0 || y >= height) return false;
+    int idx = y * width + x;
+    return (mask[idx / 32] >> (idx % 32)) & 1;
+}
+
+__device__ inline void set_mask_bit(uint32_t* mask, int x, int y, int width) {
+    int idx = y * width + x;
+    atomicOr(&mask[idx / 32], 1 << (idx % 32));
+}
+
 __device__ static inline uint64_t build_patch6x6(
     uint16_t NO, uint16_t N, uint16_t NE,
     uint16_t O,  uint16_t C, uint16_t E,
@@ -162,6 +173,7 @@ uint64_t
 18 19 20 21 22 23
 24 25 26 27 28 29
 30 31 32 33 34 35
+xx ........... 63
 
 
 uint64_t patch layout (6 rows of 6 bits = 36 bits, stored in a uint64_t):
@@ -170,6 +182,7 @@ uint64_t patch layout (6 rows of 6 bits = 36 bits, stored in a uint64_t):
            |             |                 |                 |                 |                 |
 */
 __device__ static inline uint16_t extract_4x4_idx_from_patch(uint64_t patch, int top_row, int left_col) {
+    // Le but de cette méthode est d'extraire l'incide de 4x4 bits (16 bits) correspondant à une sous-région de 4x4 dans la patch 6x6. Cet indice sera utilisé pour faire une lookup dans la LUT pré-calculée.
     uint16_t idx = 0;
     for (int r = 0; r < 4; ++r) {
         uint8_t row6 = (patch >> (6 * (top_row + r))) & 0x3F;       // get 6-bit row
@@ -201,7 +214,7 @@ __device__ static inline uint16_t assemble_from_quadrants(uint8_t tl, uint8_t tr
     return out;
 }
 
-__global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int width, int height, unsigned char* lut) {
+__global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int width, int height, unsigned char* lut, uint32_t* mask_in, uint32_t* mask_out) {
     __shared__ uint16_t tile[HALO_DIM][HALO_DIM];
 
     int tx = threadIdx.x; // 0..BLOCK_DIM-1
@@ -241,6 +254,24 @@ __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int widt
     // If outside the grid, nothing to do
     if (gid_x >= width || gid_y >= height) return;
 
+    // Check if we need to update
+    bool active = false;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+             if (get_mask_bit(mask_in, gid_x + dx, gid_y + dy, width, height)) {
+                 active = true;
+                 break;
+             }
+        }
+        if (active) break;
+    }
+
+    if (!active) {
+        // Shortcut -> la cellule et ses voisines n'ont pas changé
+        new_grid[gid_y * width + gid_x] = tile[ly][lx];
+        return;
+    }
+
     // Load the 3x3 neighborhood from shared tile
     uint16_t NO = tile[ly - 1][lx - 1];
     uint16_t N  = tile[ly - 1][lx    ];
@@ -275,9 +306,15 @@ __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int widt
 
     // Write result
     new_grid[gid_y * width + gid_x] = result;
+    
+    // Update mask if changed
+    if (result != C) {
+        set_mask_bit(mask_out, gid_x, gid_y, width);
+    }
 }
 
 void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
+                       torch::Tensor mask_in, torch::Tensor mask_out,
                        std::optional<torch::Stream> stream) {
   
   precompute_lut();
@@ -285,6 +322,9 @@ void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
   int width = grid_in.size(1);
   int height = grid_in.size(0);
   assert(grid_in.sizes() == grid_out.sizes());
+  
+  // Ensure mask sizes ?  
+  mask_out.zero_();
 
   cudaStream_t cudaStream = 0;
   if (stream.has_value()) {
@@ -300,7 +340,8 @@ void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
                       (uint16_height + BLOCK_DIM - 1) / BLOCK_DIM);
 
   game_of_life_kernel<<<gridSize, blockSize, 0, cudaStream>>>(
-      grid_in.data_ptr<uint16_t>(), grid_out.data_ptr<uint16_t>(), uint16_width, uint16_height, d_lut);
+      grid_in.data_ptr<uint16_t>(), grid_out.data_ptr<uint16_t>(), uint16_width, uint16_height, d_lut,
+      mask_in.data_ptr<uint32_t>(), mask_out.data_ptr<uint32_t>());
 }
 
 

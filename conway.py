@@ -8,6 +8,13 @@ from build import conway
 def profile(grid_size, **kwargs):
     grid_ping = torch.randint(0, 65536, (grid_size//4, grid_size//4), dtype=torch.uint16, device="cuda")
     grid_pong = torch.empty_like(grid_ping)
+    
+    # Masks
+    num_blocks = grid_ping.numel()
+    mask_size = (num_blocks + 31) // 32
+    mask_ping = torch.full((mask_size,), 0xFFFFFFFF, dtype=torch.uint32, device="cuda")
+    mask_pong = torch.zeros(mask_size, dtype=torch.uint32, device="cuda")
+
     game = conway.GameOfLife()
 
     stream = torch.cuda.Stream()
@@ -15,14 +22,17 @@ def profile(grid_size, **kwargs):
     end = torch.cuda.Event(enable_timing=True)
 
     for _ in range(5): # warmup
-        game.step(grid_ping, grid_pong, stream)
+        game.step(grid_ping, grid_pong, mask_ping, mask_pong, stream)
         grid_ping, grid_pong = grid_pong, grid_ping
+        mask_ping, mask_pong = mask_pong, mask_ping
 
     # profile
     start.record(stream)
     for _ in range(kwargs["iterations"]):
-        game.step(grid_ping, grid_pong, stream)
+        game.step(grid_ping, grid_pong, mask_ping, mask_pong, stream)
         grid_ping, grid_pong = grid_pong, grid_ping
+        mask_ping, mask_pong = mask_pong, mask_ping
+
     end.record(stream)
     stream.synchronize()
 
@@ -57,32 +67,58 @@ def unpack_grid(packed):
 
 
 def test(**kwargs):
+    iterations = int(kwargs.get("iterations", 20))
     grid_size = 16
-    # Full (unpacked) reference grid
-    grid = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.uint8, device="cuda")
 
-    # Reference implementation in pure torch (unpacked)
+    # Reference (unpacked) initial grid
+    ref = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.uint8, device="cuda")
+
+    # convolution kernel for neighbors
     kernel = torch.tensor([[[[1, 1, 1], [1, 0, 1], [1, 1, 1]]]], dtype=torch.float32, device="cuda")
-    neighbors = torch.nn.functional.conv2d(grid.reshape((1, 1, grid_size, grid_size)).to(torch.float32), kernel, padding="same").reshape((grid_size, grid_size)).round().to(torch.uint8)
-    torch_out = (neighbors == 3) | (grid & (neighbors == 2))
 
-    # Pack for GPU implementation (each uint16 encodes a 4x4 block)
-    packed_grid = pack_grid(grid)
-    packed_out = torch.zeros_like(packed_grid)
+    # Pack initial grid for GPU implementation
+    gpu_packed_curr = pack_grid(ref)
+    gpu_packed_next = torch.empty_like(gpu_packed_curr)
 
-    # Call GPU implementation which expects uint16 packed representation
+    # Masks (uint32) - start all active so first frame is fully computed
+    num_blocks = gpu_packed_curr.numel()
+    mask_size = (num_blocks + 31) // 32
+    mask_curr = torch.full((mask_size,), 0xFFFFFFFF, dtype=torch.uint32, device="cuda")
+    mask_next = torch.zeros(mask_size, dtype=torch.uint32, device="cuda")
+
     game = conway.GameOfLife()
-    game.step(packed_grid, packed_out, None)
 
-    # Unpack GPU output to full grid for comparison
-    out = unpack_grid(packed_out)
+    for it in range(1, iterations + 1):
+        # reference step (unpacked)
+        neighbors = torch.nn.functional.conv2d(ref.reshape((1, 1, grid_size, grid_size)).to(torch.float32), kernel, padding="same").reshape((grid_size, grid_size)).round().to(torch.uint8)
+        ref = ((neighbors == 3) | (ref & (neighbors == 2))).to(torch.uint8)
 
-    match = torch.all(torch.eq(torch_out, out))
-    if match:
-        print('Both implementations match')
-    else:
-        print('Error, voir la différence:')
-        print(torch_out ^ out)
+        # GPU step on packed blocks
+        game.step(gpu_packed_curr, gpu_packed_next, mask_curr, mask_next, None)
+
+        # compare grid outputs
+        out = unpack_grid(gpu_packed_next)
+        if not torch.all(torch.eq(ref, out)):
+            print(f"Mismatch at iteration {it}")
+            diff = (ref ^ out).to(torch.uint8)
+            print("Differing cells:", int(diff.sum().item()))
+            idx = torch.nonzero(diff)
+            if idx.numel() > 0:
+                r, c = idx[0].tolist()
+                r0 = max(0, r - 4)
+                c0 = max(0, c - 4)
+                r1 = min(grid_size, r + 5)
+                c1 = min(grid_size, c + 5)
+                print("ref slice:\n", ref[r0:r1, c0:c1].cpu().numpy())
+                print("gpu slice:\n", out[r0:r1, c0:c1].cpu().numpy())
+            raise AssertionError(f"Frame {it} mismatch")
+
+        # rotate buffers and reset next mask
+        gpu_packed_curr, gpu_packed_next = gpu_packed_next, gpu_packed_curr
+        mask_curr, mask_next = mask_next, mask_curr
+        mask_next.zero_()
+
+    print(f"All {iterations} iterations match")
 
 
 def read_pattern(file_path, tensor):
@@ -122,26 +158,41 @@ def read_pattern(file_path, tensor):
     tensor[start_row:start_row + pattern_height, start_col:start_col + pattern_width] = torch_pattern
 
 
-def update(frameNum, img, grid_ping, grid_pong, game):
+def update(frameNum, img, grid_ping, grid_pong, mask_ping, mask_pong, game):
     if frameNum % 2 == 1:
         grid_ping, grid_pong = grid_pong, grid_ping
-    game.step(grid_ping, grid_pong, None)
-    img.set_data(grid_pong.cpu().numpy())
+        mask_ping, mask_pong = mask_pong, mask_ping
+        
+    game.step(grid_ping, grid_pong, mask_ping, mask_pong, None)
+    
+    # Unpack for display
+    unpacked = unpack_grid(grid_pong)
+    img.set_data(unpacked.cpu().numpy())
     return img
 
 
 def show(grid_size, **kwargs):
-    grid_ping = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.uint8)
+    # Ensure divisible by 4
+    grid_size = (grid_size // 4) * 4
+    
+    grid_init = torch.randint(0, 2, (grid_size, grid_size), dtype=torch.uint8, device="cuda")
     if kwargs.get("file") is not None:
-        read_pattern(kwargs["file"], grid_ping)
-    grid_ping = grid_ping.to("cuda")
+        read_pattern(kwargs["file"], grid_init)
+        
+    grid_ping = pack_grid(grid_init)
     grid_pong = torch.empty_like(grid_ping)
+    
+    # Masks
+    num_blocks = grid_ping.numel()
+    mask_size = (num_blocks + 31) // 32
+    mask_ping = torch.full((mask_size,), 0xFFFFFFFF, dtype=torch.uint32, device="cuda")
+    mask_pong = torch.zeros(mask_size, dtype=torch.uint32, device="cuda")
 
     fig, ax = plt.subplots()
-    img = ax.imshow(grid_ping.cpu().numpy(), interpolation='nearest')
+    img = ax.imshow(grid_init.cpu().numpy(), interpolation='nearest')
     game = conway.GameOfLife()
 
-    ani = animation.FuncAnimation(fig, update, fargs=(img, grid_ping, grid_pong, game),
+    ani = animation.FuncAnimation(fig, update, fargs=(img, grid_ping, grid_pong, mask_ping, mask_pong, game),
                                   interval=1, save_count=1)
     plt.show()
 
