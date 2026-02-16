@@ -4,5 +4,9 @@ venv/
 *.aux
 *.out
 *.toc
+*.nav
+*.vrb
+*.snm
+*.synctex(busy)
 *.fdb_latexmk
 *.fls
