@@ -201,7 +201,62 @@ __device__ static inline uint16_t assemble_from_quadrants(uint8_t tl, uint8_t tr
     return out;
 }
 
-__global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int width, int height, unsigned char* lut) {
+
+// Global counters for active tiles
+int *d_active_list = nullptr;
+int *d_active_count = nullptr;
+int max_blocks = 0;
+
+__global__ void find_active_blocks(uint16_t *grid, int width, int height, int *active_list, int *active_count, int grid_w_blocks, int grid_h_blocks) {
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+    
+    int tx = threadIdx.x; 
+    int ty = threadIdx.y; 
+    int tid = ty * BLOCK_DIM + tx;
+    int num_threads = BLOCK_DIM * BLOCK_DIM;
+    
+    int base_x = bx * BLOCK_DIM;
+    int base_y = by * BLOCK_DIM;
+    
+    __shared__ int block_active;
+    if (tid == 0) block_active = 0;
+    __syncthreads();
+    
+    int start_x = base_x - 1;
+    int start_y = base_y - 1;
+    
+    // Check local region + halo
+    for (int i = tid; i < HALO_DIM * HALO_DIM; i += num_threads) {
+        int ly = i / HALO_DIM;
+        int lx = i % HALO_DIM;
+        
+        int gx = start_x + lx;
+        int gy = start_y + ly;
+        
+        if (gx >= 0 && gx < width && gy >= 0 && gy < height) {
+            if (grid[gy * width + gx] != 0) {
+                block_active = 1;
+            }
+        }
+    }
+    __syncthreads();
+    
+    if (tid == 0 && block_active) {
+        int idx = atomicAdd(active_count, 1);
+        active_list[idx] = (by << 16) | bx;
+    }
+}
+
+__global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int width, int height, unsigned char* lut, int *active_list, int num_active) {
+    
+    int block_id = blockIdx.x;
+    if (block_id >= num_active) return;
+    
+    int packed_dim = active_list[block_id];
+    int block_y = packed_dim >> 16;
+    int block_x = packed_dim & 0xFFFF;
+    
     __shared__ uint16_t tile[HALO_DIM][HALO_DIM];
 
     int tx = threadIdx.x; // 0..BLOCK_DIM-1
@@ -211,8 +266,8 @@ __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int widt
     int num_threads = BLOCK_DIM * BLOCK_DIM;
 
     // Origine de lecture : Coin haut-gauche du bloc de uint16 moins 1 (halo)
-    int read_base_x = blockIdx.x * BLOCK_DIM - 1;
-    int read_base_y = blockIdx.y * BLOCK_DIM - 1;
+    int read_base_x = block_x * BLOCK_DIM - 1;
+    int read_base_y = block_y * BLOCK_DIM - 1;
 
     for (int i = tid; i < HALO_DIM * HALO_DIM; i += num_threads) {
         int ly = i / HALO_DIM;
@@ -235,8 +290,8 @@ __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int widt
     int ly = ty + 1;
 
     // Global output coordinates (in units of uint16 blocks)
-    int gid_x = blockIdx.x * BLOCK_DIM + tx;
-    int gid_y = blockIdx.y * BLOCK_DIM + ty;
+    int gid_x = block_x * BLOCK_DIM + tx;
+    int gid_y = block_y * BLOCK_DIM + ty;
 
     // If outside the grid, nothing to do
     if (gid_x >= width || gid_y >= height) return;
@@ -280,6 +335,9 @@ void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
   int height = grid_in.size(0);
   assert(grid_in.sizes() == grid_out.sizes());
 
+  // Important: Clear output grid because we sparsely write to it
+  grid_out.zero_();
+
   cudaStream_t cudaStream = 0;
   if (stream.has_value()) {
     cudaStream = c10::cuda::CUDAStream(stream.value()).stream();
@@ -289,13 +347,37 @@ void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
   int uint16_width = width;   // number of uint16 per row
   int uint16_height = height; // number of uint16 per column
 
+  int grid_w_blocks = (uint16_width + BLOCK_DIM - 1) / BLOCK_DIM;
+  int grid_h_blocks = (uint16_height + BLOCK_DIM - 1) / BLOCK_DIM;
+  int total_blocks = grid_w_blocks * grid_h_blocks;
+  
+  if (total_blocks > max_blocks) {
+      if (d_active_list) cudaFree(d_active_list);
+      if (d_active_count) cudaFree(d_active_count);
+      cudaMalloc(&d_active_list, total_blocks * sizeof(int));
+      cudaMalloc(&d_active_count, sizeof(int));
+      max_blocks = total_blocks;
+  }
+  
+  cudaMemsetAsync(d_active_count, 0, sizeof(int), cudaStream);
+  
   const dim3 blockSize(BLOCK_DIM, BLOCK_DIM);
-  const dim3 gridSize((uint16_width + BLOCK_DIM - 1) / BLOCK_DIM,
-                      (uint16_height + BLOCK_DIM - 1) / BLOCK_DIM);
+  const dim3 gridSize(grid_w_blocks, grid_h_blocks);
+  
+  find_active_blocks<<<gridSize, blockSize, 0, cudaStream>>>(
+      grid_in.data_ptr<uint16_t>(), uint16_width, uint16_height, d_active_list, d_active_count, grid_w_blocks, grid_h_blocks
+  );
+  
+  int h_active_count = 0;
+  cudaMemcpyAsync(&h_active_count, d_active_count, sizeof(int), cudaMemcpyDeviceToHost, cudaStream);
+  cudaStreamSynchronize(cudaStream);
 
-  game_of_life_kernel<<<gridSize, blockSize, 0, cudaStream>>>(
-      grid_in.data_ptr<uint16_t>(), grid_out.data_ptr<uint16_t>(), uint16_width, uint16_height, d_lut);
+  if (h_active_count > 0) {
+      game_of_life_kernel<<<h_active_count, blockSize, 0, cudaStream>>>(
+          grid_in.data_ptr<uint16_t>(), grid_out.data_ptr<uint16_t>(), uint16_width, uint16_height, d_lut, d_active_list, h_active_count);
+  }
 }
+
 
 
 // TODO : faire une lookup table 3 par 3 et faire un indice de 512 bits (9 bits pour les voisins) pour calculer directement le résultat d'un pixel. chaque thread se deplace pour faire 2 par 2 cellules mais pourquoi faire cela pourquoi chaque thread ferais 2 par 2 cellules ?
