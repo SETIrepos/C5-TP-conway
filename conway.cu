@@ -7,62 +7,37 @@
 unsigned char* d_lut = nullptr; 
 
 void precompute_lut() {
-    if (d_lut != nullptr) return; 
+    if (d_lut != nullptr) return;
 
-    unsigned char host_lut[65536];
-    
-    // Pour chaque configuration possible de 4x4 (16 bits)
-    #pragma omp parallel for
-    for (int i = 0; i < 65536; i++) {
-        // On reconstruite une mini-grille temporaire
-        int temp_grid[4][4];
-        for (int bit = 0; bit < 16; bit++) {
-            // Mapping : 0..3 -> ligne 0, 4..7 -> ligne 1...
-            /*
-            0  1  2  3
-            4  5  6  7
-            8  9  10 11
-            12 13 14 15
-            */
-            int r = bit / 4;
-            int c = bit % 4;
-            temp_grid[r][c] = (i >> bit) & 1;
+    // LUT compacte : on encode les 512 configurations 3x3 (2^9) en 64 octets
+    // chaque octet contient 8 résultats (1 bit par configuration).
+    // index_byte = pattern >> 3  (6 bits -> 0..63)
+    // bit_in_byte = pattern & 0x7 (3 bits -> 0..7)
+    unsigned char host_lut[64];
+    for (int i = 0; i < 64; ++i) host_lut[i] = 0;
+
+    // Pour chaque configuration 3x3 (bits 0..8, centre = bit 4)
+    for (int pattern = 0; pattern < 512; ++pattern) {
+        int self = (pattern >> 4) & 1; // centre
+        int neighbors = 0;
+        for (int b = 0; b < 9; ++b) {
+            if (b == 4) continue;
+            neighbors += (pattern >> b) & 1;
         }
 
-        // On calcule le résultat pour le bloc 2x2 central
-        // Correspondants aux indices (1,1), (1,2), (2,1), (2,2)
-        unsigned char result_mask = 0;
-        
-        // Coordonnées relatives des 4 pixels cibles
-        int targets[4][2] = {{1,1}, {1,2}, {2,1}, {2,2}};
-        
-        for (int k = 0; k < 4; k++) {
-            int r = targets[k][0];
-            int c = targets[k][1];
-            
-            // Compter voisins
-            int neighbors = 0;
-            for (int dr = -1; dr <= 1; dr++) {
-                for (int dc = -1; dc <= 1; dc++) {
-                    if (dr == 0 && dc == 0) continue;
-                    neighbors += temp_grid[r + dr][c + dc];
-                }
-            }
-            
-            int self = temp_grid[r][c];
-            int alive = (neighbors == 3) || (self == 1 && neighbors == 2);
-            
-            if (alive) {
-                result_mask |= (1 << k);
-            }
+        int alive = (neighbors == 3) || (self == 1 && neighbors == 2);
+        if (alive) {
+            int byte_idx = pattern >> 3;        // /8
+            int bit_pos  = pattern & 0x7;       // %8
+            host_lut[byte_idx] |= (1u << bit_pos);
         }
-        host_lut[i] = result_mask;
     }
 
-    // Allocation GPU
-    cudaMalloc(&d_lut, 65536 * sizeof(unsigned char));
-    cudaMemcpy(d_lut, host_lut, 65536 * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    // Copier la LUT compacte sur le device (64 octets)
+    cudaMalloc(&d_lut, sizeof(host_lut));
+    cudaMemcpy(d_lut, host_lut, sizeof(host_lut), cudaMemcpyHostToDevice);
 }
+
 
 #define BLOCK_DIM 32
 #define HALO_DIM (BLOCK_DIM + 2) // 32 + 2 pour le halo de 1 uint16_t
@@ -153,62 +128,42 @@ __device__ static inline uint64_t build_patch6x6(
     return patch;
 }
 
-// Extract a 4x4 index (16-bit) from the 6x6 patch.
-/*
-uint64_t 
-0  1  2  3  4  5
-6  7  8  9  10 11
-12 13 14 15 16 17
-18 19 20 21 22 23
-24 25 26 27 28 29
-30 31 32 33 34 35
-
-
-uint64_t patch layout (6 rows of 6 bits = 36 bits, stored in a uint64_t):
-           |             |                 |                 |                 |                 |
-0 1 2 3 4 5|6 7 8 9 10 11|12 13 14 15 16 17|18 19 20 21 22 23|24 25 26 27 28 29|30 31 32 33 34 35| xx...xx
-           |             |                 |                 |                 |                 |
-*/
-__device__ static inline uint16_t extract_4x4_idx_from_patch(uint64_t patch, int top_row, int left_col) {
+// Extract a 3x3 index (9 bits) from the 6x6 patch to compute the result of the cell at (row, col)
+// row and col are coordinates within the 4x4 target block (0..3).
+// In the 6x6 patch, the 4x4 block starts at (1,1).
+// So cell (row, col) corresponds to 6x6 patch index (row+1, col+1).
+// Its 3x3 neighborhood is from (row, col) to (row+2, col+2) in the patch.
+__device__ static inline uint16_t extract_3x3_idx_from_patch(uint64_t patch, int row, int col) {
     uint16_t idx = 0;
-    for (int r = 0; r < 4; ++r) {
-        uint8_t row6 = (patch >> (6 * (top_row + r))) & 0x3F;       // get 6-bit row
-        uint8_t cols = (row6 >> left_col) & 0xF;                   // 4 contiguous bits
-        idx |= (uint16_t)cols << (4 * r);                         // row-major 16-bit
+    // We need 3 rows from the patch starting at 'row'
+    for (int r = 0; r < 3; ++r) {
+        uint8_t row6 = (patch >> (6 * (row + r))) & 0x3F;
+        uint8_t cols = (row6 >> col) & 0x7; // 3 bits
+        idx |= (uint16_t)cols << (3 * r);
     }
     return idx;
 }
 
-// Assemble 4 results (each 2x2 encoded as 4 bits: low 2 bits row0, high 2 bits row1) into a 4x4 uint16
-__device__ static inline uint16_t assemble_from_quadrants(uint8_t tl, uint8_t tr, uint8_t bl, uint8_t br) {
-    uint16_t out = 0;
-    // TL -> rows 0..1, cols 0..1
-    out |= ((uint16_t)(tl & 0x3)) << 0;       // row0 cols0-1 -> bits 0-1
-    out |= ((uint16_t)((tl >> 2) & 0x3)) << 4; // row1 cols0-1 -> bits 4-5
-
-    // TR -> rows 0..1, cols 2..3
-    out |= ((uint16_t)(tr & 0x3)) << 2;       // row0 cols2-3 -> bits 2-3
-    out |= ((uint16_t)((tr >> 2) & 0x3)) << 6; // row1 cols2-3 -> bits 6-7
-
-    // BL -> rows 2..3, cols 0..1
-    out |= ((uint16_t)(bl & 0x3)) << 8;       // row2 cols0-1 -> bits 8-9
-    out |= ((uint16_t)((bl >> 2) & 0x3)) << 12;// row3 cols0-1 -> bits 12-13
-
-    // BR -> rows 2..3, cols 2..3
-    out |= ((uint16_t)(br & 0x3)) << 10;      // row2 cols2-3 -> bits 10-11
-    out |= ((uint16_t)((br >> 2) & 0x3)) << 14;// row3 cols2-3 -> bits 14-15
-
-    return out;
+__device__ static inline uint8_t lut3x3_get(const unsigned char *shared_lut, uint16_t idx) {
+    int byte_idx = idx >> 3;
+    int bit_pos = idx & 0x7;
+    return (shared_lut[byte_idx] >> bit_pos) & 1;
 }
 
 __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int width, int height, unsigned char* lut) {
     __shared__ uint16_t tile[HALO_DIM][HALO_DIM];
+    __shared__ unsigned char shared_lut[64];
 
     int tx = threadIdx.x; // 0..BLOCK_DIM-1
     int ty = threadIdx.y; // 0..BLOCK_DIM-1
 
     int tid = ty * BLOCK_DIM + tx;
     int num_threads = BLOCK_DIM * BLOCK_DIM;
+
+    // Load LUT into shared memory
+    if (tid < 64) {
+        shared_lut[tid] = lut[tid];
+    }
 
     // Origine de lecture : Coin haut-gauche du bloc de uint16 moins 1 (halo)
     int read_base_x = blockIdx.x * BLOCK_DIM - 1;
@@ -254,18 +209,22 @@ __global__ void game_of_life_kernel(uint16_t *grid, uint16_t *new_grid, int widt
 
     uint64_t patch = build_patch6x6(NO, N, NE, O, C, E, SO, S, SE);
 
-    // get 4 indices for quadrants
-    uint16_t idx_tl = extract_4x4_idx_from_patch(patch, 0, 0); // rows 0..3, cols 0..3
-    uint16_t idx_tr = extract_4x4_idx_from_patch(patch, 0, 2); // rows 0..3, cols 2..5
-    uint16_t idx_bl = extract_4x4_idx_from_patch(patch, 2, 0); // rows 2..5, cols 0..3
-    uint16_t idx_br = extract_4x4_idx_from_patch(patch, 2, 2); // rows 2..5, cols 2..5
-
-    uint8_t res_tl = lut[idx_tl];
-    uint8_t res_tr = lut[idx_tr];
-    uint8_t res_bl = lut[idx_bl];
-    uint8_t res_br = lut[idx_br];
-
-    uint16_t result = assemble_from_quadrants(res_tl, res_tr, res_bl, res_br);
+    // Compute the result for the 4x4 block (16 pixels)
+    uint16_t result = 0;
+    
+    // Unroll manually or by compiler? 4x4 loop is small enough.
+    // row 0
+    #pragma unroll
+    for(int r=0; r<4; ++r) {
+        #pragma unroll
+        for(int c=0; c<4; ++c) {
+             uint16_t idx = extract_3x3_idx_from_patch(patch, r, c);
+             uint8_t alive = lut3x3_get(shared_lut, idx);
+             if(alive) {
+                 result |= (1 << (r * 4 + c)); 
+             }
+        }
+    }
 
     // Write result
     new_grid[gid_y * width + gid_x] = result;
