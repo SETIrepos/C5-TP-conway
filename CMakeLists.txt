@@ -1,6 +1,14 @@
 # CMakeLists.txt
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.18)
 project(conway)
+
+# If the user doesn't provide CMAKE_CUDA_ARCHITECTURES, set a sensible default
+# Use a multi-arch list to maximize portability across GPUs. This creates a
+# fat-binary covering common SMs (Pascal → Turing → Ampere). Override with
+# -DCMAKE_CUDA_ARCHITECTURES when you need a smaller/optimized build.
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES "60;61;70;75;80;86" CACHE STRING "CUDA architectures (SM numbers, e.g. 60;61;70;75;80;86)")
+endif()
 
 set(Python3_FIND_VIRTUALENV FIRST)
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)

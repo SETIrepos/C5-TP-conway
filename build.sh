@@ -1,3 +1,18 @@
 #!/bin/bash
 
 cmake --build build
+source venv/bin/activate && cmake -S . -B build -G Ninja -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build
+python conway.py test
+python conway.py profile --grid-size 65536
+
+
+sudo ncu -o kernel_profile --set full -k game_of_life_kernel python conway.py profile --grid-size 4000 --iterations 1
+# ouvrez kernel_profile.ncu-rep dans l’interface Nsight Compute (GUI).
+
+sudo nsys profile -t cuda -o nsys_report python conway.py profile --grid-size 4000 --iterations 1
+# ouvrir nsys_report.nsys-rep dans Nsight Systems (GUI).
+
+sudo /opt/nvidia/nsight-compute/2024.3.0/ncu \
+  -o kernel_profile --set full -k game_of_life_kernel \
+  /home/hugo/Repositories/SETIrepo/A5-TP-conway/venv/bin/python \
+  /home/hugo/Repositories/SETIrepo/A5-TP-conway/conway.py profile --grid-size 4000 --iterations 1

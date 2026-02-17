@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Conway — profile (venv)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/conway.py",
+      "args": ["profile", "--grid-size", "4000", "--iterations", "5"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PATH": "${workspaceFolder}/venv/bin:${env:PATH}",
+        "PYTHONPATH": "${workspaceFolder}/build:${env:PYTHONPATH}"
+      }
+    }
+  ]
+}
