@@ -385,17 +385,53 @@ unsigned char res = lut[state_idx];
 % CONCLUSION
 % -----------------------------------------------------------------------------
 \begin{frame}{Résumé des Gains de Performance}
+    \footnotesize
     \centering
-    \renewcommand{\arraystretch}{1.5}
-    \begin{tabular}{lr}
+    \textbf{Métriques de Débit et Temps d'Exécution} \\
+    \vspace{0.1cm}
+    \begin{tabular}{lccccc}
         \toprule
-        \textbf{Version du Kernel} & \textbf{Performance (FPS)} \\
+        \textbf{Version} & \textbf{Thread/cell} & \textbf{Duration} (ms) & \textbf{Mem. BW} (GB/s) & \textbf{Mem. BW} (\%) & \textbf{FPS} \\
         \midrule
-        \texttt{noif-char} (Naïf) & 48.81 \\
-        \texttt{lookup4x4} (Shared Memory) & 152.04 \\
-        \texttt{uint16} (Bit-packing) & \textbf{416.51} \\
+        \texttt{noif-char}        & 1 & 25.21 & 89.42 & 32.72 & 48.81 \\
+        \texttt{lookup4$\times$4} & 4 & 11.21 & 196.02 & 48.30 & 152.04 \\
+        \texttt{uint16}           & 16 & \textbf{3.03} & 90.54 & 25.85 & 416.51 \\
+        \bottomrule
+    \end{tabular}
+
+    \vspace{0.5cm}
+
+    \textbf{Efficacité Matérielle} \\
+    \vspace{0.1cm}
+    \begin{tabular}{lcccc}
+        \toprule
+        \textbf{Version} & \textbf{L1/TEX Hit} (\%) & \textbf{Mem Busy} (\%) & \textbf{SM Busy} (\%) & \textbf{Compute} (\%) \\
+        \midrule
+        \texttt{noif-char} & 73.85 & 16.56 & 32.46 & 32.72 \\
+        \texttt{lookup4$\times$4} & 72.02 & 31.05 & 46.56 & 48.30 \\
+        \texttt{uint16}    & \textbf{95.56} & 20.68 & 39.18 & 37.25 \\
         \bottomrule
     \end{tabular}
 \end{frame}
+
+
+% -----------------------------------------------------------------------------
+% ANNEXES : PROFILING
+% -----------------------------------------------------------------------------
+\begin{frame}{Profiling: noif-char}
+    \centering
+    \includegraphics[width=0.75\textwidth]{noif-char.png}
+\end{frame}
+
+\begin{frame}{Profiling: lookup4$\times$4}
+    \centering
+    \includegraphics[width=0.75\textwidth]{lookup4x4.png}
+\end{frame}
+
+\begin{frame}{Profiling: uint16 (Division par 8 des accès mémoire) }
+    \centering
+    \includegraphics[width=0.75\textwidth]{uint16.png}
+\end{frame}
+
 
 \end{document}
