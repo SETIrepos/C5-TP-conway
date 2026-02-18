@@ -9,54 +9,35 @@
 unsigned char* d_lut = nullptr; 
 
 void precompute_lut() {
-    if (d_lut != nullptr) return; 
+    if (d_lut != nullptr) return;
 
-    unsigned char host_lut[65536];
-    
-    // Pour chaque configuration possible de 4x4 (16 bits)
-    for (int i = 0; i < 65536; i++) {
-        // On reconstruite une mini-grille temporaire
-        int temp_grid[4][4];
-        for (int bit = 0; bit < 16; bit++) {
-            // Mapping lineaire : 0..3 -> ligne 0, 4..7 -> ligne 1...
-            int r = bit / 4;
-            int c = bit % 4;
-            temp_grid[r][c] = (i >> bit) & 1;
+    // LUT compacte : on encode les 512 configurations 3x3 (2^9) en 64 octets
+    // chaque octet contient 8 résultats (1 bit par configuration).
+    // index_byte = pattern >> 3  (6 bits -> 0..63)
+    // bit_in_byte = pattern & 0x7 (3 bits -> 0..7)
+    unsigned char host_lut[64];
+    for (int i = 0; i < 64; ++i) host_lut[i] = 0;
+
+    // Pour chaque configuration 3x3 (bits 0..8, centre = bit 4)
+    for (int pattern = 0; pattern < 512; ++pattern) {
+        int self = (pattern >> 4) & 1; // centre
+        int neighbors = 0;
+        for (int b = 0; b < 9; ++b) {
+            if (b == 4) continue;
+            neighbors += (pattern >> b) & 1;
         }
 
-        // On calcule le résultat pour le bloc 2x2 central
-        // Correspondants aux indices (1,1), (1,2), (2,1), (2,2)
-        unsigned char result_mask = 0;
-        
-        // Coordonnées relatives des 4 pixels cibles
-        int targets[4][2] = {{1,1}, {1,2}, {2,1}, {2,2}};
-        
-        for (int k = 0; k < 4; k++) {
-            int r = targets[k][0];
-            int c = targets[k][1];
-            
-            // Compter voisins
-            int neighbors = 0;
-            for (int dr = -1; dr <= 1; dr++) {
-                for (int dc = -1; dc <= 1; dc++) {
-                    if (dr == 0 && dc == 0) continue;
-                    neighbors += temp_grid[r + dr][c + dc];
-                }
-            }
-            
-            int self = temp_grid[r][c];
-            int alive = (neighbors == 3) || (self == 1 && neighbors == 2);
-            
-            if (alive) {
-                result_mask |= (1 << k);
-            }
+        int alive = (neighbors == 3) || (self == 1 && neighbors == 2);
+        if (alive) {
+            int byte_idx = pattern >> 3;        // /8
+            int bit_pos  = pattern & 0x7;       // %8
+            host_lut[byte_idx] |= (1u << bit_pos);
         }
-        host_lut[i] = result_mask;
     }
 
-    // Allocation GPU
-    cudaMalloc(&d_lut, 65536 * sizeof(unsigned char));
-    cudaMemcpy(d_lut, host_lut, 65536 * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    // Copier la LUT compacte sur le device (64 octets)
+    cudaMalloc(&d_lut, sizeof(host_lut));
+    cudaMemcpy(d_lut, host_lut, sizeof(host_lut), cudaMemcpyHostToDevice);
 }
 
 #define TILE_DIM 64
@@ -104,51 +85,35 @@ __global__ void game_of_life_kernel(unsigned char *grid, unsigned char *new_grid
     __syncthreads();
 
     // --- Calcul LUT ---
-    // Ce thread s'occupe des pixels locaux dans la tile :
-    // (2*ty + 1, 2*tx + 1) -> haut gauche du 2x2
-    // On doit extraire le voisinage 4x4 centré sur ce bloc.
-    // Le bloc 4x4 commence à : row = (2*ty + 1) - 1 = 2*ty
-    //                          col = (2*tx + 1) - 1 = 2*tx
-    
-    int tile_r = 2 * ty;
-    int tile_c = 2 * tx;
-    
-    uint16_t state_idx = 0;
-    
+    // Ce thread calcule un bloc de 2x2 pixels de sortie.
+    // L'indice (r, c) dans 'tile' pour le pixel (out_glob_x, out_glob_y) est (2*ty + 1, 2*tx + 1).
+    int r0 = 2 * ty + 1;
+    int c0 = 2 * tx + 1;
+
     #pragma unroll
-    for (int r = 0; r < 4; r++) {
+    for (int i = 0; i < 2; ++i) {
         #pragma unroll
-        for (int c = 0; c < 4; c++) {
-            if (tile[tile_r + r][tile_c + c]) {
-                // bit mapping doit correspondre à celui de precompute_lut
-                // bit = r * 4 + c
-                state_idx |= (1 << (r * 4 + c));
+        for (int j = 0; j < 2; ++j) {
+            int target_r = r0 + i;
+            int target_c = c0 + j;
+            int gx = out_glob_x + j;
+            int gy = out_glob_y + i;
+
+            if (gx < width && gy < height) {
+                int pattern = 0;
+                #pragma unroll
+                for (int dr = -1; dr <= 1; ++dr) {
+                    #pragma unroll
+                    for (int dc = -1; dc <= 1; ++dc) {
+                        if (tile[target_r + dr][target_c + dc]) {
+                            pattern |= (1 << ((dr + 1) * 3 + (dc + 1)));
+                        }
+                    }
+                }
+                new_grid[gy * width + gx] = (lut[pattern >> 3] >> (pattern & 0x7)) & 1;
             }
         }
     }
-    
-    unsigned char res = lut[state_idx];
-
-    // Ecriture des 4 pixels
-    // Mapping: bit 0 -> (0,0), bit 1 -> (0,1), bit 2 -> (1,0), bit 3 -> (1,1) (relatifs au 2x2)
-    // ATTENTION : dans precompute, j'ai utilisé: Targets {{1,1}, {1,2}, {2,1}, {2,2}}
-    // qui correspondent (r,c) dans le bloc 4x4.
-    // 1,1 -> top-left du 2x2. (bit 0)
-    // 1,2 -> top-right du 2x2. (bit 1)
-    // 2,1 -> bot-left du 2x2. (bit 2)
-    // 2,2 -> bot-right du 2x2. (bit 3)
-    
-    if (out_glob_x < width && out_glob_y < height) 
-        new_grid[out_glob_y * width + out_glob_x] = (res >> 0) & 1;
-        
-    if (out_glob_x + 1 < width && out_glob_y < height)
-        new_grid[out_glob_y * width + out_glob_x + 1] = (res >> 1) & 1;
-        
-    if (out_glob_x < width && out_glob_y + 1 < height) 
-        new_grid[(out_glob_y + 1) * width + out_glob_x] = (res >> 2) & 1;
-
-    if (out_glob_x + 1 < width && out_glob_y + 1 < height) 
-        new_grid[(out_glob_y + 1) * width + out_glob_x + 1] = (res >> 3) & 1;
 }
 
 void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
