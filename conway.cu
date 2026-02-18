@@ -40,29 +40,27 @@ void precompute_lut() {
     cudaMemcpy(d_lut, host_lut, sizeof(host_lut), cudaMemcpyHostToDevice);
 }
 
-#define TILE_DIM 64
+#define TILE_DIM 32
 #define HALO_DIM (TILE_DIM + 2)
-// Pour la version LUT, un thread traite 2x2 pixels, donc le block de thread est plus petit
-#define LUT_THREAD_DIM (TILE_DIM / 2) 
 
 __global__ void game_of_life_kernel(unsigned char *grid, unsigned char *new_grid, int width, int height, unsigned char* lut) {
     __shared__ unsigned char tile[HALO_DIM][HALO_DIM];
 
     // Stratégie Grid Stride Loop avec Shared Memory et LUT
     // Chaque bloc produit une tuile de output de 32x32 pixels
-    // Mais on n'a que 16x16 threads par bloc.
+    // avec 32x32 threads par bloc.
     
-    int tx = threadIdx.x; // 0..15
-    int ty = threadIdx.y; // 0..15
+    int tx = threadIdx.x; // 0..31
+    int ty = threadIdx.y; // 0..31
     
-    // Coordonnées de sortie (coin haut gauche du bloc 2x2 traité par ce thread)
-    int out_glob_x = blockIdx.x * TILE_DIM + 2 * tx;
-    int out_glob_y = blockIdx.y * TILE_DIM + 2 * ty;
+    // Coordonnées de sortie
+    int gx_out = blockIdx.x * TILE_DIM + tx;
+    int gy_out = blockIdx.y * TILE_DIM + ty;
 
     // --- Chargement Collaboratif ---
-    // 256 threads chargent 34x34 = 1156 elements. -> ~4.5 elements/thread
-    int tid = ty * LUT_THREAD_DIM + tx; 
-    int num_threads = LUT_THREAD_DIM * LUT_THREAD_DIM; // 256
+    // 1024 threads chargent 34x34 = 1156 elements.
+    int tid = ty * blockDim.x + tx; 
+    int num_threads = blockDim.x * blockDim.y; // 1024
     
     // Origine de lecture : Coin haut-gauche du bloc de 32x32 moins 1 (halo)
     int read_base_x = blockIdx.x * TILE_DIM - 1;
@@ -85,34 +83,23 @@ __global__ void game_of_life_kernel(unsigned char *grid, unsigned char *new_grid
     __syncthreads();
 
     // --- Calcul LUT ---
-    // Ce thread calcule un bloc de 2x2 pixels de sortie.
-    // L'indice (r, c) dans 'tile' pour le pixel (out_glob_x, out_glob_y) est (2*ty + 1, 2*tx + 1).
-    int r0 = 2 * ty + 1;
-    int c0 = 2 * tx + 1;
+    // Chaque thread calcule 1 pixel de sortie.
+    // L'indice (r, c) dans 'tile' pour le pixel (gx_out, gy_out) est (ty + 1, tx + 1).
+    if (gx_out < width && gy_out < height) {
+        int pattern = 0;
+        int r = ty + 1;
+        int c = tx + 1;
 
-    #pragma unroll
-    for (int i = 0; i < 2; ++i) {
         #pragma unroll
-        for (int j = 0; j < 2; ++j) {
-            int target_r = r0 + i;
-            int target_c = c0 + j;
-            int gx = out_glob_x + j;
-            int gy = out_glob_y + i;
-
-            if (gx < width && gy < height) {
-                int pattern = 0;
-                #pragma unroll
-                for (int dr = -1; dr <= 1; ++dr) {
-                    #pragma unroll
-                    for (int dc = -1; dc <= 1; ++dc) {
-                        if (tile[target_r + dr][target_c + dc]) {
-                            pattern |= (1 << ((dr + 1) * 3 + (dc + 1)));
-                        }
-                    }
+        for (int dr = -1; dr <= 1; ++dr) {
+            #pragma unroll
+            for (int dc = -1; dc <= 1; ++dc) {
+                if (tile[r + dr][c + dc]) {
+                    pattern |= (1 << ((dr + 1) * 3 + (dc + 1)));
                 }
-                new_grid[gy * width + gx] = (lut[pattern >> 3] >> (pattern & 0x7)) & 1;
             }
         }
+        new_grid[gy_out * width + gx_out] = (lut[pattern >> 3] >> (pattern & 0x7)) & 1;
     }
 }
 
@@ -130,8 +117,8 @@ void game_of_life_step(torch::Tensor grid_in, torch::Tensor grid_out,
     cudaStream = c10::cuda::CUDAStream(stream.value()).stream();
   }
 
-  // Threads par bloc définis par LUT_THREAD_DIM, couvre TILE_DIM pixels
-  const dim3 blockSize(LUT_THREAD_DIM, LUT_THREAD_DIM);
+  // Threads par bloc (32x32), couvre une tuile de 32x32 pixels
+  const dim3 blockSize(TILE_DIM, TILE_DIM);
   const dim3 gridSize((width + TILE_DIM - 1) / TILE_DIM,
                       (height + TILE_DIM - 1) / TILE_DIM);
 
