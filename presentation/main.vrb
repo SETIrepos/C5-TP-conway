@@ -1,0 +1,33 @@
+\frametitle{Construction de l'index LUT}
+\begin{columns}
+        \column{0.5\textwidth}
+        \begin{lstlisting}
+// Construction de l'index 16-bits
+uint16_t state_idx = 0;
+#pragma unroll
+for (int r = 0; r < 4; r++) {
+  #pragma unroll
+  for (int c = 0; c < 4; c++) {
+    if (tile[tile_r + r][tile_c + c]) {
+       state_idx |= (1 << (r * 4 + c));
+    }
+  }
+}
+unsigned char res = lut[state_idx];
+        \end{lstlisting}
+        \column{0.5\textwidth}
+        \begin{tikzpicture}[scale=0.8]
+            % Visualizing the unroll
+            \foreach \y in {0,1,2,3} {
+                \foreach \x in {0,1,2,3} {
+                    \draw (\x, \y) rectangle (\x+1, \y+1);
+                    \node[scale=0.6] at (\x+0.5, \y+0.5) {b\y\x};
+                }
+            }
+            \draw[ultra thick, red] (0,0) rectangle (4,4);
+            \node[below] at (2,0) {Block 4$\times$4 (voisinage)};
+
+            \draw[->, thick] (4.2, 2) -- (5, 2);
+            \node[right] at (5, 2) {\texttt{uint16\_t state\_idx}};
+        \end{tikzpicture}
+    \end{columns}
