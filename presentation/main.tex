@@ -17,7 +17,7 @@
 
 % Couleurs personnalisées
 \definecolor{codebg}{rgb}{0.95,0.95,0.95}
-\definecolor{cudaigreen}{RGB}{118,185,0}
+\definecolor{cudagreen}{RGB}{118,185,0}
 \definecolor{memblue}{RGB}{100,149,237}
 \definecolor{coreorange}{RGB}{255,140,0}
 
@@ -55,13 +55,13 @@
 % -----------------------------------------------------------------------------
 \section{Version Naïve: noif-char}
 
-\begin{frame}{Version 1: noif-char (Naïf)}
+\begin{frame}{Version 1: noif-char (Naïve)}
     \begin{columns}
         \column{0.4\textwidth}
 
         \textbf{Taille Grille:}
         $32768 \times 32768$ octets \\
-        $\approx 1$ GB de RAM
+        $\approx 1$ Go de RAM
 
         \vspace{0.5cm}
         \textbf{FPS:} 48.69 \\
@@ -83,7 +83,7 @@
             % Thread accessing neighbors
             \fill[red!50] (3,3) rectangle (4,4) node[midway, black] {};
             \draw[ultra thick, coreorange] (2,2) rectangle (5,5);
-            \node[coreorange, right] at (5,3.5) {8 lectures distantes};
+            \node[coreorange, right] at (5,3.5) {8 lectures mémoires};
             
             % Arrows representing access
             \foreach \xidx in {2,3,4} {
@@ -120,10 +120,10 @@ new_grid[idx] = alive;
     \vspace{0.5cm}
     \centering
     \begin{tikzpicture}
-        \node[draw, fill=memblue!10, minimum width=2cm] (read) {Lecture 9 cells};
+        \node[draw, fill=memblue!10, minimum width=2cm] (read) {Lecture 9 cellules};
         \node[draw, fill=red!10, right of=read, xshift=2.5cm] (nei) {Nombre de voisins};
         \node[draw, fill=memblue!10, right of=nei, xshift=2.5cm] (alu) {Calcul état cellule};
-        \node[draw, fill=coreorange!20, right of=alu, xshift=2cm] (write) {Ecriture};
+        \node[draw, fill=coreorange!20, right of=alu, xshift=2cm] (write) {Écriture};
         
         \draw[->, thick] (read) -- (nei);
         \draw[->, thick] (nei) -- (alu);
@@ -193,7 +193,7 @@ unsigned char res = lut[state_idx];
                 }
             }
             \draw[ultra thick, red] (0,0) rectangle (4,4);
-            \node[below] at (2,0) {Block 4$\times$4 (voisinage)};
+            \node[below] at (2,0) {Bloc 4$\times$4 (voisinage)};
             
             \draw[->, thick] (4.2, 2) -- (5, 2);
             \node[right] at (5, 2) {\texttt{uint16\_t state\_idx}};
@@ -240,12 +240,12 @@ unsigned char res = lut[state_idx];
 % -----------------------------------------------------------------------------
 \section{Version Ultime: uint16}
 
-\begin{frame}{Version 3: uint16 (Bit Packing)}
+\begin{frame}{Version 3: uint16 (Bit-Packing)}
     \begin{columns}
         \column{0.45\textwidth}
         \textbf{Performance:}
         \begin{itemize}
-            \item \textbf{FPS:} \textbf{416.51} ($\times 8.5$ vs Naïf)
+            \item \textbf{FPS:} \textbf{416.51} ($\times 8.5$ vs Naïve)
             \item \textbf{Stratégie:} Compression Mémoire
         \end{itemize}
         
@@ -253,9 +253,9 @@ unsigned char res = lut[state_idx];
         \textbf{Idée Clé:}
         \begin{itemize}
             \item 1 cellule = 1 bit (pas 1 octet)
-            \item Grille $32768 \times 32768$ cells
-            \item \textbf{Empreinte:} $128$ MB
-            \item $\frac{32768 \times 32768}{8 \text{ bits/octet}} = 128 \text{ MB}$
+            \item Grille $32768 \times 32768$ cellules
+            \item \textbf{Empreinte:} $128$ Mo
+            \item $\frac{32768 \times 32768}{8 \text{ bits/octet}} = 128 \text{ Mo}$
         \end{itemize}
         
         \column{0.55\textwidth}
@@ -263,12 +263,12 @@ unsigned char res = lut[state_idx];
         \begin{tikzpicture}[scale=0.7, transform shape]
             % --- Comparison char vs uint16 ---
             \node[draw, fill=red!20, minimum width=2cm, minimum height=0.6cm] (charbox) at (0, 5.5) {char};
-            \node[right] at (charbox.east) {1 cell = 1 byte};
+            \node[right] at (charbox.east) {1 cellule = 1 octet};
             
             \node[draw, fill=green!20, minimum width=4.0cm, minimum height=0.6cm] (uintbox) at (0, 4) {uint16};
-            \node[right] at (uintbox.east) {16 cells = 2 bytes};
+            \node[right] at (uintbox.east) {16 cellules = 2 octets};
             
-            \draw[->, thick, coreorange] (charbox.south) -- node[left] {$\times 8$ density} (uintbox.north);
+            \draw[->, thick, coreorange] (charbox.south) -- node[left] {$\times 8$ densité} (uintbox.north);
 
             % --- 2x2 grid of uint16_t ---
             \begin{scope}[shift={(-2, 0)}, scale=0.85]
@@ -391,7 +391,7 @@ unsigned char res = lut[state_idx];
     \vspace{0.1cm}
     \begin{tabular}{lccccc}
         \toprule
-        \textbf{Version} & \textbf{Thread/cell} & \textbf{Duration} (ms) & \textbf{Mem. BW} (GB/s) & \textbf{Mem. BW} (\%) & \textbf{FPS} \\
+        \textbf{Version} & \textbf{Thread/cellule} & \textbf{Durée} (ms) & \textbf{BP Mém.} (Go/s) & \textbf{BP Mém.} (\%) & \textbf{FPS} \\
         \midrule
         \texttt{noif-char}        & 1 & 25.21 & 89.42 & 32.72 & 48.81 \\
         \texttt{lookup4$\times$4} & 4 & 11.21 & 196.02 & 48.30 & 152.04 \\
@@ -405,7 +405,7 @@ unsigned char res = lut[state_idx];
     \vspace{0.1cm}
     \begin{tabular}{lcccc}
         \toprule
-        \textbf{Version} & \textbf{L1/TEX Hit} (\%) & \textbf{Mem Busy} (\%) & \textbf{SM Busy} (\%) & \textbf{Compute} (\%) \\
+        \textbf{Version} & \textbf{Hit L1/TEX} (\%) & \textbf{Occupation Mém.} (\%) & \textbf{SM Busy} (\%) & \textbf{Calcul} (\%) \\
         \midrule
         \texttt{noif-char} & 73.85 & 16.56 & 32.46 & 32.72 \\
         \texttt{lookup4$\times$4} & 72.02 & 31.05 & 46.56 & 48.30 \\

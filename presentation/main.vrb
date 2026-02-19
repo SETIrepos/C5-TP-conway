@@ -25,7 +25,7 @@ unsigned char res = lut[state_idx];
                 }
             }
             \draw[ultra thick, red] (0,0) rectangle (4,4);
-            \node[below] at (2,0) {Block 4$\times$4 (voisinage)};
+            \node[below] at (2,0) {Bloc 4$\times$4 (voisinage)};
 
             \draw[->, thick] (4.2, 2) -- (5, 2);
             \node[right] at (5, 2) {\texttt{uint16\_t state\_idx}};
