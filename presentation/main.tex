@@ -59,14 +59,14 @@
     \begin{columns}
         \column{0.4\textwidth}
 
-        \textbf{Taille Grille:}
+        \textbf{Taille grille:}
         $32768 \times 32768$ octets \\
         $\approx 1$ Go de RAM
 
         \vspace{0.5cm}
         \textbf{FPS:} 48.69 \\
         Type des données: \texttt{char} (1 octet = 1 cellule)\\
-        Pas de Shared Memory
+        Pas de shared memory
 
         \vspace{0.5cm}
         \textbf{Taille bloc:} 32$\times$32 threads (calculent 32$\times$32 cellules)
@@ -78,7 +78,7 @@
         \begin{tikzpicture}[scale=0.6, transform shape]
             % Global Memory Grid
             \draw[fill=memblue!20] (0,0) grid (6,6);
-            \node at (3,6.5) {\textbf{Global Memory (VRAM)}};
+            \node at (3,6.5) {\textbf{Global memory (VRAM)}};
             
             % Thread accessing neighbors
             \fill[red!50] (3,3) rectangle (4,4) node[midway, black] {};
@@ -100,7 +100,7 @@
     \end{columns}
 \end{frame}
 
-\begin{frame}[fragile]{Logique ``Branchless'' (noif)}
+\begin{frame}[fragile]{Logique ``branchless'' (noif)}
     \begin{lstlisting}
 // On compte les voisins vivants
 int neighbors = 0;
@@ -135,14 +135,14 @@ new_grid[idx] = alive;
 % PARTIE 2: LOOKUP4X4
 % -----------------------------------------------------------------------------
 
-\begin{frame}{Version 2: Lookup Table \texorpdfstring{4$\times$4}{4$\times$4}}
+\begin{frame}{Version 2: Lookup table \texorpdfstring{4$\times$4}{4$\times$4}}
     \begin{columns}
         \column{0.4\textwidth}
         \textbf{Performance:}
         \begin{itemize}
             \item \textbf{FPS:} 112.76 ($\times 2.3$)
             \item \textbf{Stratégie:} Pré-calcul (LUT)
-            \item \textbf{Mémoire:} Utilisation de la \textbf{Shared Memory}
+            \item \textbf{Mémoire:} Utilisation de la \textbf{shared memory}
         \end{itemize}
         
         \vspace{0.2cm}
@@ -201,10 +201,10 @@ unsigned char res = lut[state_idx];
     \end{columns}
 \end{frame}
 
-\begin{frame}{Gestion Mémoire: Stratégie par Bloc}
+\begin{frame}{Gestion mémoire: stratégie par bloc}
     \begin{columns}
         \column{0.4\textwidth}
-        Un Thread calcule \textbf{2$\times$2 cellules}
+        Un thread calcule \textbf{2$\times$2 cellules}
         
         \vspace{0.3cm}
         Bloc 32$\times$32 threads
@@ -220,11 +220,11 @@ unsigned char res = lut[state_idx];
             % --- Visualisation du Bloc Global (Shared Memory) ---
             % Halo (Shared Memory Size)
             \draw[fill=memblue!20, draw=memblue, thick] (-0.5, -0.5) rectangle (6.5, 6.5);
-            \node[memblue, anchor=south east] at (6.5, 6.5) {Shared Memory ($66 \times 66$ cellules)};
+            \node[memblue, anchor=south east] at (6.5, 6.5) {Shared memory ($66 \times 66$ cellules)};
 
             % Output Zone (Block Dimensions)
             \draw[fill=white, draw=black, thick, pattern=north west lines, pattern color=gray!10] (0, 0) rectangle (6, 6);
-            \node[anchor=north west] at (0, 6) {Zone de Calcul ($64 \times 64$ cellules)};
+            \node[anchor=north west] at (0, 6) {Zone de calcul ($64 \times 64$ cellules)};
 
             % Arrows indicating Halo
             \draw[<->, red, thick] (-0.5, 3) -- (0, 3);
@@ -245,8 +245,8 @@ unsigned char res = lut[state_idx];
         \column{0.45\textwidth}
         \textbf{Performance:}
         \begin{itemize}
-            \item \textbf{FPS:} \textbf{416.51} ($\times 8.5$ vs Naïve)
-            \item \textbf{Stratégie:} Compression Mémoire
+            \item \textbf{FPS:} \textbf{416.51} ($\times 8.5$ vs naïve)
+            \item \textbf{Stratégie:} compression mémoire
         \end{itemize}
         
         \vspace{0.2cm}
@@ -293,7 +293,7 @@ unsigned char res = lut[state_idx];
     \end{columns}
 \end{frame}
 
-\begin{frame}{Architecture du Kernel uint16}
+\begin{frame}{Architecture du kernel uint16}
 
     \centering
     \begin{tikzpicture}[scale=0.9, transform shape]
@@ -306,6 +306,7 @@ unsigned char res = lut[state_idx];
                 \node[scale=0.75, font=\small] at (\c+0.5, 3.5-\r) {\idx};
             }
         }
+        \draw[ultra thick, black] (0,0) rectangle (4,4);
         \node[above, font=\large] at (2,5.5) {1 uint16 = 1 thread};
 
         % 2. Premier élément (déclenchement au slide 2)
@@ -341,15 +342,15 @@ unsigned char res = lut[state_idx];
 
 \end{frame}
 
-\begin{frame}{Architecture du Kernel uint16}
+\begin{frame}{Architecture du kernel uint16}
     \centering
     \begin{tikzpicture}[scale=1, transform shape]
         % Main Thread work area
         \node[draw, dashed, fill=gray!5, minimum width=12cm, minimum height=6cm] (gpu) {};
-        \node[align=center] at (0, 3.5) {1 Thread = \texttt{uint16}\\Bloc 32$\times$32 threads = 128$\times$128 cellules};
+        \node[align=center] at (0, 3.5) {1 thread = \texttt{uint16}\\Bloc 32$\times$32 threads = 128$\times$128 cellules};
 
         % shared memory area
-        \node[draw, fill=memblue!20, align=center] (shared) at (-4.5, 0) {Shared Memory\\
+        \node[draw, fill=memblue!20, align=center] (shared) at (-4.5, 0) {Shared memory\\
         34$\times$34 uint16};
         % \node[above] at (shared.north) {\textbf{Shared Memory} (Halo 66x66 indices)};
 
@@ -383,10 +384,10 @@ unsigned char res = lut[state_idx];
 % -----------------------------------------------------------------------------
 % CONCLUSION
 % -----------------------------------------------------------------------------
-\begin{frame}{Résumé des Gains de Performance}
+\begin{frame}{Résumé des gains de performance}
     \footnotesize
     \centering
-    \textbf{Métriques de Débit et Temps d'Exécution} \\
+    \textbf{Métriques de débit et temps d'exécution} \\
     \vspace{0.1cm}
     \begin{tabular}{lccccc}
         \toprule
@@ -400,7 +401,7 @@ unsigned char res = lut[state_idx];
 
     \vspace{0.5cm}
 
-    \textbf{Efficacité Matérielle} \\
+    \textbf{Efficacité matérielle} \\
     \vspace{0.1cm}
     \begin{tabular}{lcccc}
         \toprule
@@ -424,10 +425,10 @@ unsigned char res = lut[state_idx];
 
 \begin{frame}{Profiling: lookup4$\times$4}
     \centering
-    \includegraphics[width=0.75\textwidth]{lookup4x4.png}
+    \includegraphics[width=0.75\textwidth]{lookup44.png}
 \end{frame}
 
-\begin{frame}{Profiling: uint16 (Division par 8 des accès mémoire) }
+\begin{frame}{Profiling: uint16 (division par 8 des accès mémoire) }
     \centering
     \includegraphics[width=0.75\textwidth]{uint16.png}
 \end{frame}
